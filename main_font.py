@@ -483,7 +483,7 @@ def validate_dataloader(data_loader, model):
         for item in groups[label]:
             positive_pairs.setdefault(idx, set([])).add(item)
 
-    criterion = NegativeLoss(BatchDotProduct())
+    criterion = NegativeLoss(BatchDotProduct(reduction='none'))
     distance_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
     m_ap, (top_1, pr_a_k5) = calc_map_prak(distance_matrix, np.arange(len(distance_matrix)), positive_pairs)
 

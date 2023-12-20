@@ -342,7 +342,7 @@ def train_dino(args):
 
         val_loss = validation(val_datasets, teacher_without_ddp)
         if val_loss < best_loss:
-            utils.save_on_master(save_dict, os.path.join(args.output_dir, f'checkpoint{epoch:04}.pth'))
+            utils.save_on_master(save_dict, os.path.join(args.output_dir, f'best_model.pth'))
             best_loss = val_loss
             if utils.is_main_process():
                 print(f'Best loss reduced from {best_loss} to {val_loss}')

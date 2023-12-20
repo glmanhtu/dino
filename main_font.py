@@ -155,8 +155,8 @@ def train_dino(args):
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        t_im_size=96,
-        s_im_size=32
+        t_im_size=112,
+        s_im_size=48
     )
     stroke_transform = torchvision.transforms.Compose([
         torchvision.transforms.RandomAffine(10, translate=(0.1, 0.1), fill=0),

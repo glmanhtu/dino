@@ -398,6 +398,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             if i == 0:  # only the first group is regularized
                 param_group["weight_decay"] = wd_schedule[it]
 
+        losses = []
         for i in range(len(letters)):
             mini_batch = len(batch_targets) // len(letters)
             targets = batch_targets[i * mini_batch: (i+1) * mini_batch]
@@ -435,7 +436,9 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                 student_output = student_output[groups[:, 1]].view((-1, student_output.shape[2]))
                 loss_cross = dino_loss(student_output, teacher_output, epoch, cross_samples=True)
                 loss = (loss + loss_cross) / 2
+                losses.append(loss)
 
+        loss = sum(losses) / len(losses)
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
             sys.exit(1)

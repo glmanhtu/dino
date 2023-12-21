@@ -31,9 +31,11 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
+from ml_engine.data.samplers import MPerClassSampler
 from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
 from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
 from ml_engine.preprocessing.transforms import ACompose
+from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
 from torchvision import datasets, transforms
 from torchvision import models as torchvision_models
@@ -41,7 +43,7 @@ from torchvision import models as torchvision_models
 import utils
 import vision_transformer as vits
 from eval_knn import extract_features
-from font_dataset import FontDataset
+from font_dataset import FontDataset, FontDataLoader
 from vision_transformer import DINOHead
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
@@ -58,6 +60,7 @@ def get_args_parser():
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
+    parser.add_argument('--m', default=5, type=int)
 
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
@@ -108,7 +111,7 @@ def get_args_parser():
     parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
         with the batch size, and specified here for a reference batch size of 256.""")
-    parser.add_argument("--warmup_epochs", default=10, type=int,
+    parser.add_argument("--warmup_epochs", default=5, type=int,
         help="Number of epochs for the linear learning-rate warm up.")
     parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""")
@@ -142,6 +145,7 @@ def get_args_parser():
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     return parser
 
+letters = ['a', 'e', 'm']
 
 def train_dino(args):
     utils.init_distributed_mode(args)
@@ -171,13 +175,20 @@ def train_dino(args):
         torchvision.transforms.Resize((112, 112)),
         transform
     ])
-    dataset_a = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.TRAIN, stroke_transform, transform,
-                            'a', (224, 224))
-    dataset_e = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.TRAIN, stroke_transform, transform,
-                            'e', (224, 224))
-    dataset_m = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.TRAIN, stroke_transform, transform,
-                            'm', (224, 224))
-    dataset = ConcatDataset([dataset_a, dataset_e, dataset_m])
+    datasets = []
+    for letter in letters:
+        ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.TRAIN, stroke_transform, transform,
+                         letter, (224, 224))
+        datasets.append(ds)
+    data_loader = FontDataLoader(
+        datasets,
+        batch_size=args.batch_size_per_gpu,
+        m=args.m,
+        numb_workers=args.num_workers,
+        pin_memory=True,
+        repeat=1,
+        repeat_same_class=False
+    )
 
     transform = torchvision.transforms.Compose([
         torchvision.transforms.Resize((112, 112)),
@@ -185,26 +196,11 @@ def train_dino(args):
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
 
-    dataset_a = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.VAL, stroke_transform, transform,
-                            'a', (224, 224))
-    dataset_e = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.VAL, stroke_transform, transform,
-                            'e', (224, 224))
-    dataset_m = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.VAL, stroke_transform, transform,
-                            'm', (224, 224))
-    val_datasets = [dataset_a, dataset_e, dataset_m]
-
-    sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        sampler=sampler,
-        batch_size=args.batch_size_per_gpu,
-        num_workers=args.num_workers,
-        persistent_workers=True,
-        pin_memory=True,
-        drop_last=True,
-    )
-
-    print(f"Data loaded: there are {len(dataset)} images.")
+    val_datasets = []
+    for letter in letters:
+        ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.VAL, stroke_transform, transform,
+                         letter, (224, 224))
+        val_datasets.append(ds)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
@@ -358,7 +354,7 @@ def train_dino(args):
 
 def validation(datasets, teacher_without_ddp):
     maps, top1s, pra5s = [], [], []
-    for idx, letter in enumerate(['a', 'e', 'm']):
+    for idx, letter in enumerate(letters):
         dataset = datasets[idx]
         data_loader = torch.utils.data.DataLoader(
             dataset,
@@ -394,7 +390,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                     fp16_scaler, args):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    for it, (batch_images, batch_targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
         # update weight decay and learning rate according to their schedule
         it = len(data_loader) * epoch + it  # global training iteration
         for i, param_group in enumerate(optimizer.param_groups):
@@ -402,13 +398,43 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             if i == 0:  # only the first group is regularized
                 param_group["weight_decay"] = wd_schedule[it]
 
-        # move images to gpu
-        images = [im.cuda(non_blocking=True) for im in images]
-        # teacher and student forward passes + compute dino loss
-        with torch.cuda.amp.autocast(fp16_scaler is not None):
-            teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
-            student_output = student(images)
-            loss = dino_loss(student_output, teacher_output, epoch)
+        for i in range(len(letters)):
+            mini_batch = len(batch_targets) // len(letters)
+            targets = batch_targets[i * mini_batch: (i+1) * mini_batch]
+            mini_batch = len(batch_images) // len(letters)
+            images = batch_images[i * mini_batch: (i+1) * mini_batch]
+
+            targets = torch.stack(targets).cuda()
+            n = targets.size(0)
+            eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+            pos_mask = targets.expand(
+                targets.shape[0], n
+            ).t() == targets.expand(n, targets.shape[0])
+
+            pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+            groups = []
+            for i in range(n):
+                it = torch.tensor([i], device=targets.device)
+                pos_pair_idx = torch.nonzero(pos_mask[i, i:]).view(-1)
+                if pos_pair_idx.shape[0] > 0:
+                    combinations = get_combinations(it, pos_pair_idx + i)
+                    groups.append(combinations)
+
+            groups = torch.cat(groups, dim=0)
+            # move images to gpu
+            images = [im.cuda(non_blocking=True) for im in images]
+            # teacher and student forward passes + compute dino loss
+            with torch.cuda.amp.autocast(fp16_scaler is not None):
+                teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
+                student_output = student(images)
+                loss = dino_loss(student_output, teacher_output, epoch)
+
+                teacher_output = teacher_output.view((-1, 2, teacher_output.shape[1]))
+                student_output = student_output.view((teacher_output.shape[0], -1, student_output.shape[1]))
+                teacher_output = teacher_output[groups[:, 0]].view((-1, teacher_output.shape[2]))
+                student_output = student_output[groups[:, 1]].view((-1, student_output.shape[2]))
+                loss_cross = dino_loss(student_output, teacher_output, epoch, cross_samples=True)
+                loss = (loss + loss_cross) / 2
 
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
@@ -513,7 +539,7 @@ class DINOLoss(nn.Module):
             np.ones(nepochs - warmup_teacher_temp_epochs) * teacher_temp
         ))
 
-    def forward(self, student_output, teacher_output, epoch):
+    def forward(self, student_output, teacher_output, epoch, cross_samples=False):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
@@ -529,14 +555,15 @@ class DINOLoss(nn.Module):
         n_loss_terms = 0
         for iq, q in enumerate(teacher_out):
             for v in range(len(student_out)):
-                if v == iq:
+                if v == iq and not cross_samples:
                     # we skip cases where student and teacher operate on the same view
                     continue
                 loss = torch.sum(-q * F.log_softmax(student_out[v], dim=-1), dim=-1)
                 total_loss += loss.mean()
                 n_loss_terms += 1
         total_loss /= n_loss_terms
-        self.update_center(teacher_output)
+        if not cross_samples:
+            self.update_center(teacher_output)
         return total_loss
 
     @torch.no_grad()

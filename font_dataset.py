@@ -6,9 +6,47 @@ from enum import Enum
 from typing import Union
 
 import numpy as np
+import torch
 import torchvision.transforms
 from PIL import Image, ImageDraw, ImageFont
-from torch.utils.data import Dataset
+from ml_engine.data.samplers import MPerClassSampler
+from torch.utils.data import Dataset, DataLoader
+
+
+class FontDataLoader:
+
+    class FakeSampler:
+        def set_epoch(self, _):
+            return
+
+    def __init__(self, datasets, batch_size, m, numb_workers, pin_memory, repeat, repeat_same_class):
+        mini_batch_size = batch_size // len(datasets)
+        max_dataset_length = max([len(x) for x in datasets]) * repeat
+        self.dataloaders = []
+        for dataset in datasets:
+            sampler = MPerClassSampler(dataset.data_labels, m=m, length_before_new_iter=max_dataset_length,
+                                       repeat_same_class=repeat_same_class)
+            dataloader = DataLoader(dataset, sampler=sampler, pin_memory=pin_memory, batch_size=mini_batch_size,
+                                    drop_last=True, num_workers=numb_workers)
+            self.dataloaders.append(dataloader)
+        self.sampler = FontDataLoader.FakeSampler()
+
+    def __len__(self):
+        return max([len(x) for x in self.dataloaders])
+
+    def __iter__(self):
+        for samples in zip(*self.dataloaders):
+            images, targets = [], []
+            for item in samples:
+                item_images, item_targets = item
+                if images is None:
+                    images = item_images
+                    targets = item_targets
+                else:
+                    images += item_images
+                    targets += item_targets
+
+            yield images, targets
 
 
 class _Split(Enum):

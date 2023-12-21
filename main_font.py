@@ -416,9 +416,9 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             groups = []
             for j in range(n):
                 it = torch.tensor([j], device=targets.device)
-                pos_pair_idx = torch.nonzero(pos_mask[j, j:]).view(-1)
+                pos_pair_idx = torch.nonzero(pos_mask[j, :]).view(-1)
                 if pos_pair_idx.shape[0] > 0:
-                    combinations = get_combinations(it, pos_pair_idx + j)
+                    combinations = get_combinations(it, pos_pair_idx)
                     groups.append(combinations)
 
             groups = torch.cat(groups, dim=0)
@@ -428,15 +428,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             with torch.cuda.amp.autocast(fp16_scaler is not None):
                 teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
                 student_output = student(images)
-                # loss = dino_loss(student_output, teacher_output, epoch)
-
-                teacher_output = teacher_output.view((-1, 2, teacher_output.shape[1]))
-                student_output = student_output.view((teacher_output.shape[0], -1, student_output.shape[1]))
-                teacher_output = teacher_output[groups[:, 0]].view((-1, teacher_output.shape[2]))
-                student_output = student_output[groups[:, 1]].view((-1, student_output.shape[2]))
-                loss_cross = dino_loss(student_output, teacher_output, epoch, cross_samples=True)
-                # loss = (loss + loss_cross) / 2
-                losses.append(loss_cross)
+                loss = dino_loss(student_output, teacher_output, epoch, groups)
+                losses.append(loss)
 
         loss = sum(losses) / len(losses)
         if not math.isfinite(loss.item()):
@@ -542,7 +535,7 @@ class DINOLoss(nn.Module):
             np.ones(nepochs - warmup_teacher_temp_epochs) * teacher_temp
         ))
 
-    def forward(self, student_output, teacher_output, epoch, cross_samples=False):
+    def forward(self, student_output, teacher_output, epoch, groups):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
@@ -558,10 +551,11 @@ class DINOLoss(nn.Module):
         n_loss_terms = 0
         for iq, q in enumerate(teacher_out):
             for v in range(len(student_out)):
-                if v == iq and not cross_samples:
+                if v == iq:
                     # we skip cases where student and teacher operate on the same view
                     continue
-                loss = torch.sum(-q * F.log_softmax(student_out[v], dim=-1), dim=-1)
+                # loss = torch.sum(-q * F.log_softmax(student_out[v], dim=-1), dim=-1)
+                loss = torch.sum(-q[groups[:, 0]] * F.log_softmax(student_out[v][groups[:, 1]], dim=-1), dim=-1)
                 total_loss += loss.mean()
                 n_loss_terms += 1
         total_loss /= n_loss_terms

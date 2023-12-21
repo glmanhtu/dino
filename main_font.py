@@ -414,11 +414,11 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
             pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
             groups = []
-            for i in range(n):
-                it = torch.tensor([i], device=targets.device)
-                pos_pair_idx = torch.nonzero(pos_mask[i, i:]).view(-1)
+            for j in range(n):
+                it = torch.tensor([j], device=targets.device)
+                pos_pair_idx = torch.nonzero(pos_mask[j, j:]).view(-1)
                 if pos_pair_idx.shape[0] > 0:
-                    combinations = get_combinations(it, pos_pair_idx + i)
+                    combinations = get_combinations(it, pos_pair_idx + j)
                     groups.append(combinations)
 
             groups = torch.cat(groups, dim=0)
@@ -428,15 +428,15 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             with torch.cuda.amp.autocast(fp16_scaler is not None):
                 teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
                 student_output = student(images)
-                loss = dino_loss(student_output, teacher_output, epoch)
+                # loss = dino_loss(student_output, teacher_output, epoch)
 
                 teacher_output = teacher_output.view((-1, 2, teacher_output.shape[1]))
                 student_output = student_output.view((teacher_output.shape[0], -1, student_output.shape[1]))
                 teacher_output = teacher_output[groups[:, 0]].view((-1, teacher_output.shape[2]))
                 student_output = student_output[groups[:, 1]].view((-1, student_output.shape[2]))
                 loss_cross = dino_loss(student_output, teacher_output, epoch, cross_samples=True)
-                loss = (loss + loss_cross) / 2
-                losses.append(loss)
+                # loss = (loss + loss_cross) / 2
+                losses.append(loss_cross)
 
         loss = sum(losses) / len(losses)
         if not math.isfinite(loss.item()):
@@ -565,8 +565,7 @@ class DINOLoss(nn.Module):
                 total_loss += loss.mean()
                 n_loss_terms += 1
         total_loss /= n_loss_terms
-        if not cross_samples:
-            self.update_center(teacher_output)
+        self.update_center(teacher_output)
         return total_loss
 
     @torch.no_grad()
@@ -585,7 +584,6 @@ class DINOLoss(nn.Module):
 class DataAugmentationDINO(object):
     def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, t_im_size=224, s_im_size=96):
         flip_and_color_jitter = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply(
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                 p=0.8

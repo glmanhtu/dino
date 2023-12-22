@@ -145,7 +145,10 @@ def get_args_parser():
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     return parser
 
-letters = ['a', 'e', 'm']
+val_letters = ['a', 'e', 'm']
+train_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
+                 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+
 
 def train_dino(args):
     utils.init_distributed_mode(args)
@@ -176,7 +179,7 @@ def train_dino(args):
         transform
     ])
     datasets = []
-    for letter in letters:
+    for letter in train_letters:
         ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.TRAIN, stroke_transform, transform,
                          letter, (224, 224))
         datasets.append(ds)
@@ -197,7 +200,7 @@ def train_dino(args):
     ])
 
     val_datasets = []
-    for letter in letters:
+    for letter in val_letters:
         ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.VAL, stroke_transform, transform,
                          letter, (224, 224))
         val_datasets.append(ds)
@@ -339,9 +342,9 @@ def train_dino(args):
         val_loss = validation(val_datasets, teacher_without_ddp)
         if val_loss < best_loss:
             utils.save_on_master(save_dict, os.path.join(args.output_dir, f'best_model.pth'))
-            best_loss = val_loss
             if utils.is_main_process():
                 print(f'Best loss reduced from {best_loss} to {val_loss}')
+            best_loss = val_loss
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch}
         if utils.is_main_process():
@@ -354,7 +357,7 @@ def train_dino(args):
 
 def validation(datasets, teacher_without_ddp):
     maps, top1s, pra5s = [], [], []
-    for idx, letter in enumerate(letters):
+    for idx, letter in enumerate(val_letters):
         dataset = datasets[idx]
         data_loader = torch.utils.data.DataLoader(
             dataset,
@@ -399,10 +402,10 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                 param_group["weight_decay"] = wd_schedule[it]
 
         losses = []
-        for i in range(len(letters)):
-            mini_batch = len(batch_targets) // len(letters)
+        for i in range(len(train_letters)):
+            mini_batch = len(batch_targets) // len(train_letters)
             targets = batch_targets[i * mini_batch: (i+1) * mini_batch]
-            mini_batch = len(batch_images) // len(letters)
+            mini_batch = len(batch_images) // len(train_letters)
             images = batch_images[i * mini_batch: (i+1) * mini_batch]
 
             targets = torch.stack(targets).cuda()

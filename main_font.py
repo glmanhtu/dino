@@ -136,6 +136,8 @@ def get_args_parser():
         help='Please specify path to the ImageNet training data.')
     parser.add_argument('--data_path_bg', default='/path/to/imagenet/train/', type=str,
                         help='Please specify path to the ImageNet training data.')
+    parser.add_argument('--train_letters', default=['a', 'e', 'm'], type=str, nargs='+')
+    parser.add_argument('--val_letters', default=['a', 'e', 'm'], type=str, nargs='+')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
@@ -144,10 +146,6 @@ def get_args_parser():
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     return parser
-
-val_letters = ['a', 'e', 'm']
-train_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
-                 'u', 'v', 'w', 'x', 'y', 'z']
 
 
 def train_dino(args):
@@ -179,7 +177,7 @@ def train_dino(args):
         transform
     ])
     datasets = []
-    for letter in train_letters:
+    for letter in args.train_letters:
         ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.TRAIN, stroke_transform, transform,
                          letter, (224, 224))
         datasets.append(ds)
@@ -200,7 +198,7 @@ def train_dino(args):
     ])
 
     val_datasets = []
-    for letter in val_letters:
+    for letter in args.val_letters:
         ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.VAL, stroke_transform, transform,
                          letter, (224, 224))
         val_datasets.append(ds)
@@ -357,7 +355,7 @@ def train_dino(args):
 
 def validation(datasets, teacher_without_ddp):
     maps, top1s, pra5s = [], [], []
-    for idx, letter in enumerate(val_letters):
+    for idx, letter in enumerate(args.val_letters):
         dataset = datasets[idx]
         data_loader = torch.utils.data.DataLoader(
             dataset,
@@ -402,10 +400,10 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                 param_group["weight_decay"] = wd_schedule[it]
 
         losses = []
-        for i in range(len(train_letters)):
-            mini_batch = len(batch_targets) // len(train_letters)
+        for i in range(len(args.train_letters)):
+            mini_batch = len(batch_targets) // len(args.train_letters)
             targets = batch_targets[i * mini_batch: (i+1) * mini_batch]
-            mini_batch = len(batch_images) // len(train_letters)
+            mini_batch = len(batch_images) // len(args.train_letters)
             images = batch_images[i * mini_batch: (i+1) * mini_batch]
 
             targets = torch.stack(targets).cuda()

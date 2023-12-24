@@ -173,6 +173,8 @@ def train_dino(args):
     transform = torchvision.transforms.Compose([
         ACompose([
             A.LongestMaxSize(max_size=112),
+            A.ShiftScaleRotate(shift_limit=0, scale_limit=0.1, rotate_limit=15, p=0.5, value=(255, 255, 255),
+                               border_mode=cv2.BORDER_CONSTANT),
         ]),
         torchvision.transforms.RandomCrop(112, pad_if_needed=True, fill=255),
         transform

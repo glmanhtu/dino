@@ -41,7 +41,7 @@ from torch.utils.data import ConcatDataset
 from torchvision import datasets, transforms
 from ml_engine.evaluation.distances import compute_distance_matrix
 from torchvision import models as torchvision_models
-
+from ml_engine.preprocessing.transforms import ACompose, RandomResize, PadCenterCrop
 import utils
 import vision_transformer as vits
 from aem_dataset import AEMLetterDataset, load_triplet_file
@@ -142,8 +142,8 @@ def get_args_parser():
                         help='Please specify path to the ImageNet training data.')
     parser.add_argument('--data_path_bg', default='/path/to/imagenet/train/', type=str,
                         help='Please specify path to the ImageNet training data.')
-    parser.add_argument('--train_letters', default=['a', 'e', 'm'], type=str, nargs='+')
-    parser.add_argument('--val_letters', default=['a', 'e', 'm'], type=str, nargs='+')
+    parser.add_argument('--train_letters', default=['α', 'ε', 'μ'], type=str, nargs='+')
+    parser.add_argument('--val_letters', default=['α', 'ε', 'μ'], type=str, nargs='+')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
@@ -169,23 +169,19 @@ def train_dino(args):
         t_im_size=112,
         s_im_size=48
     )
-    stroke_transform = torchvision.transforms.Compose([
-        torchvision.transforms.RandomAffine(10, translate=(0.1, 0.1), fill=0),
-        ACompose([
-            A.ShiftScaleRotate(shift_limit=0, scale_limit=0, rotate_limit=20, p=0.5,
-                               border_mode=cv2.BORDER_CONSTANT, value=(0, 0, 0)),
-            A.AdvancedBlur(blur_limit=5, p=1),
-            A.CoarseDropout(max_holes=20, min_holes=10, max_height=10, max_width=10, p=1)
-        ]),
-    ])
+
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.Resize((112, 112)),
+        ACompose([
+            A.LongestMaxSize(max_size=112),
+        ]),
+        torchvision.transforms.RandomCrop(112, pad_if_needed=True, fill=255),
         transform
     ])
     datasets = []
     for letter in args.train_letters:
         ds = AEMLetterDataset(args.data_path, transform, letter, min_size_limit=0)
         datasets.append(ds)
+
     data_loader = FontDataLoader(
         datasets,
         batch_size=args.batch_size_per_gpu,
@@ -197,7 +193,10 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.Resize((112, 112)),
+        ACompose([
+            A.LongestMaxSize(max_size=112),
+        ]),
+        PadCenterCrop(112, pad_if_needed=True, fill=255),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])

@@ -190,7 +190,7 @@ def train_dino(args):
         m=args.m,
         numb_workers=args.num_workers,
         pin_memory=True,
-        repeat=1,
+        repeat=10,
         repeat_same_class=False
     )
 
@@ -259,7 +259,8 @@ def train_dino(args):
         # teacher_without_ddp and teacher are the same thing
         teacher_without_ddp = teacher
 
-    utils.load_pretrained_weights(student, args.pretrained_path, 'student', args.arch, args.patch_size)
+    if os.path.isfile(args.pretrained_path):
+        utils.load_pretrained_weights(student, args.pretrained_path, 'student', args.arch, args.patch_size)
     student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu])
     # teacher and student start with the same weights
     teacher_without_ddp.load_state_dict(student.module.state_dict())
@@ -267,7 +268,8 @@ def train_dino(args):
     for p in teacher.parameters():
         p.requires_grad = False
     print(f"Student and Teacher are built: they are both {args.arch} network.")
-    utils.load_pretrained_weights(teacher_without_ddp, args.pretrained_path, 'teacher', args.arch, args.patch_size)
+    if os.path.isfile(args.pretrained_path):
+        utils.load_pretrained_weights(teacher_without_ddp, args.pretrained_path, 'teacher', args.arch, args.patch_size)
 
     # ============ preparing loss ... ============
     dino_loss = DINOLoss(
@@ -506,6 +508,7 @@ def validate_dataloader(data_loader, model, triplet_def):
         end = time.time()
 
     embeddings = torch.cat(embeddings)
+    print(f'Total eval images : {len(embeddings)}')
     labels = torch.cat(labels)
 
     # embeddings = F.normalize(embeddings, p=2, dim=1)
@@ -527,6 +530,7 @@ def validate_dataloader(data_loader, model, triplet_def):
             if len(positive_tms) > 1:
                 tms.append(tm)
 
+    print(f'Total positive categories: {len(tms)}')
     categories = sorted(tms)
     distance_eval = distance_df.loc[categories, categories]
 

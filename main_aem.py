@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import copy
 import os
 import sys
 import datetime
@@ -38,11 +39,12 @@ from ml_engine.preprocessing.transforms import ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
 from torchvision import datasets, transforms
+from ml_engine.evaluation.distances import compute_distance_matrix
 from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
-from aem_dataset import AEMLetterDataset
+from aem_dataset import AEMLetterDataset, load_triplet_file
 from eval_knn import extract_features
 from font_dataset import FontDataset, FontDataLoader
 from vision_transformer import DINOHead
@@ -135,6 +137,7 @@ def get_args_parser():
     # Misc
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
         help='Please specify path to the ImageNet training data.')
+    parser.add_argument('--triplet_files', type=str, nargs='+', required=True)
     parser.add_argument('--pretrained_path', default='/path/to/imagenet/train/', type=str,
                         help='Please specify path to the ImageNet training data.')
     parser.add_argument('--data_path_bg', default='/path/to/imagenet/train/', type=str,
@@ -240,6 +243,7 @@ def train_dino(args):
         teacher,
         DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
     )
+
     # move networks to gpu
     student, teacher = student.cuda(), teacher.cuda()
     # synchronize batch norms (if any)
@@ -253,6 +257,8 @@ def train_dino(args):
     else:
         # teacher_without_ddp and teacher are the same thing
         teacher_without_ddp = teacher
+
+    utils.load_pretrained_weights(student, args.pretrained_path, 'student', args.arch, args.patch_size)
     student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu])
     # teacher and student start with the same weights
     teacher_without_ddp.load_state_dict(student.module.state_dict())
@@ -260,6 +266,7 @@ def train_dino(args):
     for p in teacher.parameters():
         p.requires_grad = False
     print(f"Student and Teacher are built: they are both {args.arch} network.")
+    utils.load_pretrained_weights(teacher_without_ddp, args.pretrained_path, 'teacher', args.arch, args.patch_size)
 
     # ============ preparing loss ... ============
     dino_loss = DINOLoss(
@@ -300,9 +307,6 @@ def train_dino(args):
     momentum_schedule = utils.cosine_scheduler(args.momentum_teacher, 1,
                                                args.epochs, len(data_loader))
     print(f"Loss, optimizer and schedulers ready.")
-
-    utils.load_pretrained_weights(student, args.pretrained_path, 'student', args.arch, args.patch_size)
-    utils.load_pretrained_weights(teacher, args.pretrained_path, 'teacher', args.arch, args.patch_size)
 
     # ============ optionally resume training ... ============
     to_restore = {"epoch": 0}
@@ -360,6 +364,7 @@ def train_dino(args):
 def validation(datasets, teacher_without_ddp):
     maps, top1s, pra5s = [], [], []
     for idx, letter in enumerate(args.val_letters):
+        triplet_def = load_triplet_file(args.triplet_files[idx], with_likely=True)
         dataset = datasets[idx]
         data_loader = torch.utils.data.DataLoader(
             dataset,
@@ -368,7 +373,7 @@ def validation(datasets, teacher_without_ddp):
             pin_memory=True,
             drop_last=False,
         )
-        m_ap, top1, pra5 = validate_dataloader(data_loader, teacher_without_ddp)
+        m_ap, top1, pra5 = validate_dataloader(data_loader, teacher_without_ddp, triplet_def)
 
         print(
             f'Letter {letter}:\t'
@@ -478,7 +483,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def validate_dataloader(data_loader, model):
+def validate_dataloader(data_loader, model, triplet_def):
     batch_time, m_ap_meter = AverageMeter(), AverageMeter()
     top1_meter, pk5_meter = AverageMeter(), AverageMeter()
 
@@ -501,18 +506,31 @@ def validate_dataloader(data_loader, model):
 
     embeddings = torch.cat(embeddings)
     labels = torch.cat(labels)
-    groups = {}
-    for idx, label in enumerate(labels.numpy()):
-        groups.setdefault(label, []).append(idx)
 
-    positive_pairs = {}
-    for idx, label in enumerate(labels.numpy()):
-        for item in groups[label]:
-            positive_pairs.setdefault(idx, set([])).add(item)
+    # embeddings = F.normalize(embeddings, p=2, dim=1)
+    features = {}
+    for feature, target in zip(embeddings, labels.numpy()):
+        tm = data_loader.dataset.labels[target]
+        features.setdefault(tm, []).append(feature)
 
+    features = {k: torch.stack(v).cuda() for k, v in features.items()}
     criterion = NegativeLoss(BatchDotProduct(reduction='none'))
-    distance_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
-    m_ap, (top_1, pr_a_k5) = calc_map_prak(distance_matrix, np.arange(len(distance_matrix)), positive_pairs)
+    distance_df = compute_distance_matrix(features, reduction='mean', distance_fn=criterion)
+
+    tms = []
+    dataset_tms = set(distance_df.columns)
+    positive_pairs, negative_pairs = copy.deepcopy(triplet_def)
+    for tm in list(positive_pairs.keys()):
+        if tm in dataset_tms:
+            positive_tms = positive_pairs[tm].intersection(dataset_tms)
+            if len(positive_tms) > 1:
+                tms.append(tm)
+
+    categories = sorted(tms)
+    distance_eval = distance_df.loc[categories, categories]
+
+    distance_matrix = distance_eval.to_numpy()
+    m_ap, (top_1, pr_a_k5) = calc_map_prak(distance_matrix, distance_eval.columns, positive_pairs, negative_pairs)
 
     m_ap_meter.update(m_ap)
     top1_meter.update(top_1)

@@ -268,8 +268,6 @@ def train_dino(args):
     for p in teacher.parameters():
         p.requires_grad = False
     print(f"Student and Teacher are built: they are both {args.arch} network.")
-    if os.path.isfile(args.pretrained_path):
-        utils.load_pretrained_weights(teacher_without_ddp, args.pretrained_path, 'teacher', args.arch, args.patch_size)
 
     # ============ preparing loss ... ============
     dino_loss = DINOLoss(

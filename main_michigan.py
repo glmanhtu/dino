@@ -361,7 +361,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             if i == 0:  # only the first group is regularized
                 param_group["weight_decay"] = wd_schedule[it]
 
-        targets = torch.stack(targets).cuda()
+        targets = targets.cuda()
         n = targets.size(0)
         eyes_ = torch.eye(n, dtype=torch.bool).cuda()
         pos_mask = targets.expand(

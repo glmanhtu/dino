@@ -12,38 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import datetime
+import json
+import math
 import os
 import sys
-import datetime
 import time
-import math
-import json
 from pathlib import Path
 
-import albumentations as A
-import cv2
 import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
+import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 from PIL import Image
-import torch
-import torch.nn as nn
-import torch.distributed as dist
-import torch.backends.cudnn as cudnn
-import torch.nn.functional as F
 from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
 from ml_engine.data.samplers import MPerClassSampler
 from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
 from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
-from ml_engine.preprocessing.transforms import ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
-from torchvision import datasets, transforms
 from torchvision import models as torchvision_models
+from torchvision import transforms
 
 import utils
 import vision_transformer as vits
-from eval_knn import extract_features
-from font_dataset import FontDataset, FontDataLoader
 from michigan_dataset import MichiganDataset
 from vision_transformer import DINOHead
 
@@ -135,10 +130,6 @@ def get_args_parser():
     # Misc
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
         help='Please specify path to the ImageNet training data.')
-    parser.add_argument('--data_path_bg', default='/path/to/imagenet/train/', type=str,
-                        help='Please specify path to the ImageNet training data.')
-    parser.add_argument('--train_letters', default=['a', 'e', 'm'], type=str, nargs='+')
-    parser.add_argument('--val_letters', default=['a', 'e', 'm'], type=str, nargs='+')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')

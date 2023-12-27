@@ -79,10 +79,10 @@ class MichiganDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        (img, fragment) = self.data[idx]
+        (img_name, fragment) = self.data[idx]
 
         with Image.open(fragment) as img:
             anchor_img = self.transforms(img.convert('RGB'))
 
-        label = self.__label_idxes[img]
+        label = self.__label_idxes[img_name]
         return anchor_img, label

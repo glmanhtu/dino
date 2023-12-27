@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import copy
 import os
 import sys
 import datetime
@@ -39,14 +38,13 @@ from ml_engine.preprocessing.transforms import ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
 from torchvision import datasets, transforms
-from ml_engine.evaluation.distances import compute_distance_matrix
 from torchvision import models as torchvision_models
-from ml_engine.preprocessing.transforms import ACompose, RandomResize, PadCenterCrop
+
 import utils
 import vision_transformer as vits
-from aem_dataset import AEMLetterDataset, load_triplet_file
 from eval_knn import extract_features
 from font_dataset import FontDataset, FontDataLoader
+from michigan_dataset import MichiganDataset
 from vision_transformer import DINOHead
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
@@ -137,13 +135,10 @@ def get_args_parser():
     # Misc
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
         help='Please specify path to the ImageNet training data.')
-    parser.add_argument('--triplet_files', type=str, nargs='+', required=True)
-    parser.add_argument('--pretrained_path', default='/path/to/imagenet/train/', type=str,
-                        help='Please specify path to the ImageNet training data.')
     parser.add_argument('--data_path_bg', default='/path/to/imagenet/train/', type=str,
                         help='Please specify path to the ImageNet training data.')
-    parser.add_argument('--train_letters', default=['α', 'ε', 'μ'], type=str, nargs='+')
-    parser.add_argument('--val_letters', default=['α', 'ε', 'μ'], type=str, nargs='+')
+    parser.add_argument('--train_letters', default=['a', 'e', 'm'], type=str, nargs='+')
+    parser.add_argument('--val_letters', default=['a', 'e', 'm'], type=str, nargs='+')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
@@ -166,47 +161,32 @@ def train_dino(args):
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        t_im_size=112,
-        s_im_size=48
+        t_im_size=512,
+        s_im_size=192
     )
 
     transform = torchvision.transforms.Compose([
-        ACompose([
-            A.LongestMaxSize(max_size=112),
-            A.ShiftScaleRotate(shift_limit=0, scale_limit=0.1, rotate_limit=15, p=0.5, value=(255, 255, 255),
-                               border_mode=cv2.BORDER_CONSTANT),
-        ]),
-        torchvision.transforms.RandomCrop(112, pad_if_needed=True, fill=255),
+        torchvision.transforms.RandomCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
         transform
     ])
-    datasets = []
-    for letter in args.train_letters:
-        ds = AEMLetterDataset(args.data_path, transform, letter, min_size_limit=0)
-        datasets.append(ds)
-
-    data_loader = FontDataLoader(
-        datasets,
+    dataset = MichiganDataset(args.data_path, MichiganDataset.Split.TRAIN, transform)
+    sampler = MPerClassSampler(dataset.data_labels, m=args.m, length_before_new_iter=len(dataset) * args.m)
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        sampler=sampler,
         batch_size=args.batch_size_per_gpu,
-        m=args.m,
-        numb_workers=args.num_workers,
+        num_workers=args.num_workers,
         pin_memory=True,
-        repeat=10,
-        repeat_same_class=False
+        drop_last=True,
     )
 
     transform = torchvision.transforms.Compose([
-        ACompose([
-            A.LongestMaxSize(max_size=112),
-        ]),
-        PadCenterCrop(112, pad_if_needed=True, fill=255),
+        torchvision.transforms.RandomCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
 
-    val_datasets = []
-    for letter in args.val_letters:
-        ds = AEMLetterDataset(args.data_path, transform, letter, min_size_limit=0)
-        val_datasets.append(ds)
+    val_dataset = MichiganDataset(args.data_path, MichiganDataset.Split.VAL, transform)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
@@ -244,7 +224,6 @@ def train_dino(args):
         teacher,
         DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
     )
-
     # move networks to gpu
     student, teacher = student.cuda(), teacher.cuda()
     # synchronize batch norms (if any)
@@ -258,9 +237,6 @@ def train_dino(args):
     else:
         # teacher_without_ddp and teacher are the same thing
         teacher_without_ddp = teacher
-
-    if os.path.isfile(args.pretrained_path):
-        utils.load_pretrained_weights(student, args.pretrained_path, 'teacher', args.arch, args.patch_size)
     student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu])
     # teacher and student start with the same weights
     teacher_without_ddp.load_state_dict(student.module.state_dict())
@@ -346,7 +322,7 @@ def train_dino(args):
             save_dict['fp16_scaler'] = fp16_scaler.state_dict()
         utils.save_on_master(save_dict, os.path.join(args.output_dir, 'checkpoint.pth'))
 
-        val_loss = validation(val_datasets, teacher_without_ddp)
+        val_loss = validation(val_dataset, teacher_without_ddp)
         if val_loss < best_loss:
             utils.save_on_master(save_dict, os.path.join(args.output_dir, f'best_model.pth'))
             if utils.is_main_process():
@@ -362,37 +338,22 @@ def train_dino(args):
     print('Training time {}'.format(total_time_str))
 
 
-def validation(datasets, teacher_without_ddp):
-    maps, top1s, pra5s = [], [], []
-    for idx, letter in enumerate(args.val_letters):
-        triplet_def = load_triplet_file(args.triplet_files[idx], with_likely=True)
-        dataset = datasets[idx]
-        data_loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=args.batch_size_per_gpu,
-            num_workers=args.num_workers,
-            pin_memory=True,
-            drop_last=False,
-        )
-        m_ap, top1, pra5 = validate_dataloader(data_loader, teacher_without_ddp, triplet_def)
+def validation(dataset, teacher_without_ddp):
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+    m_ap, top1, pra5 = validate_dataloader(data_loader, teacher_without_ddp)
 
-        print(
-            f'Letter {letter}:\t'
-            f'mAP {m_ap:.4f}\t'
-            f'top1 {top1:.3f}\t'
-            f'pr@k10 {pra5:.3f}\t')
-
-        maps.append(m_ap)
-        top1s.append(top1)
-        pra5s.append(pra5)
-
-    m_ap = sum(maps) / len(maps)
-    top1 = sum(top1s) / len(top1s)
-    pra5 = sum(pra5s) / len(pra5s)
+    print(
+        f'mAP {m_ap:.4f}\t'
+        f'top1 {top1:.3f}\t'
+        f'pr@k10 {pra5:.3f}\t')
 
     eval_loss = 1 - m_ap
-
-    print(f'Average: \t mAP {m_ap:.4f}\t top1 {top1:.3f}\t pr@k5 {pra5:.3f}\t')
     return eval_loss
 
 
@@ -401,7 +362,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                     fp16_scaler, args):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    for it, (batch_images, batch_targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    for it, (images, targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
         # update weight decay and learning rate according to their schedule
         it = len(data_loader) * epoch + it  # global training iteration
         for i, param_group in enumerate(optimizer.param_groups):
@@ -409,40 +370,31 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             if i == 0:  # only the first group is regularized
                 param_group["weight_decay"] = wd_schedule[it]
 
-        losses = []
-        for i in range(len(args.train_letters)):
-            mini_batch = len(batch_targets) // len(args.train_letters)
-            targets = batch_targets[i * mini_batch: (i+1) * mini_batch]
-            mini_batch = len(batch_images) // len(args.train_letters)
-            images = batch_images[i * mini_batch: (i+1) * mini_batch]
+        targets = torch.stack(targets).cuda()
+        n = targets.size(0)
+        eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+        pos_mask = targets.expand(
+            targets.shape[0], n
+        ).t() == targets.expand(n, targets.shape[0])
 
-            targets = torch.stack(targets).cuda()
-            n = targets.size(0)
-            eyes_ = torch.eye(n, dtype=torch.bool).cuda()
-            pos_mask = targets.expand(
-                targets.shape[0], n
-            ).t() == targets.expand(n, targets.shape[0])
+        pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+        groups = []
+        for j in range(n):
+            it = torch.tensor([j], device=targets.device)
+            pos_pair_idx = torch.nonzero(pos_mask[j, :]).view(-1)
+            if pos_pair_idx.shape[0] > 0:
+                combinations = get_combinations(it, pos_pair_idx)
+                groups.append(combinations)
 
-            pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
-            groups = []
-            for j in range(n):
-                it = torch.tensor([j], device=targets.device)
-                pos_pair_idx = torch.nonzero(pos_mask[j, :]).view(-1)
-                if pos_pair_idx.shape[0] > 0:
-                    combinations = get_combinations(it, pos_pair_idx)
-                    groups.append(combinations)
+        groups = torch.cat(groups, dim=0)
+        # move images to gpu
+        images = [im.cuda(non_blocking=True) for im in images]
+        # teacher and student forward passes + compute dino loss
+        with torch.cuda.amp.autocast(fp16_scaler is not None):
+            teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
+            student_output = student(images)
+            loss = dino_loss(student_output, teacher_output, epoch, groups)
 
-            groups = torch.cat(groups, dim=0)
-            # move images to gpu
-            images = [im.cuda(non_blocking=True) for im in images]
-            # teacher and student forward passes + compute dino loss
-            with torch.cuda.amp.autocast(fp16_scaler is not None):
-                teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
-                student_output = student(images)
-                loss = dino_loss(student_output, teacher_output, epoch, groups)
-                losses.append(loss)
-
-        loss = sum(losses) / len(losses)
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
             sys.exit(1)
@@ -484,7 +436,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def validate_dataloader(data_loader, model, triplet_def):
+def validate_dataloader(data_loader, model):
     batch_time, m_ap_meter = AverageMeter(), AverageMeter()
     top1_meter, pk5_meter = AverageMeter(), AverageMeter()
 
@@ -506,34 +458,19 @@ def validate_dataloader(data_loader, model, triplet_def):
         end = time.time()
 
     embeddings = torch.cat(embeddings)
-    print(f'Total eval images : {len(embeddings)}')
     labels = torch.cat(labels)
+    groups = {}
+    for idx, label in enumerate(labels.numpy()):
+        groups.setdefault(label, []).append(idx)
 
-    # embeddings = F.normalize(embeddings, p=2, dim=1)
-    features = {}
-    for feature, target in zip(embeddings, labels.numpy()):
-        tm = data_loader.dataset.labels[target]
-        features.setdefault(tm, []).append(feature)
+    positive_pairs = {}
+    for idx, label in enumerate(labels.numpy()):
+        for item in groups[label]:
+            positive_pairs.setdefault(idx, set([])).add(item)
 
-    features = {k: torch.stack(v).cuda() for k, v in features.items()}
     criterion = NegativeLoss(BatchDotProduct(reduction='none'))
-    distance_df = compute_distance_matrix(features, reduction='mean', distance_fn=criterion)
-
-    tms = []
-    dataset_tms = set(distance_df.columns)
-    positive_pairs, negative_pairs = copy.deepcopy(triplet_def)
-    for tm in list(positive_pairs.keys()):
-        if tm in dataset_tms:
-            positive_tms = positive_pairs[tm].intersection(dataset_tms)
-            if len(positive_tms) > 1:
-                tms.append(tm)
-
-    print(f'Total positive categories: {len(tms)}')
-    categories = sorted(tms)
-    distance_eval = distance_df.loc[categories, categories]
-
-    distance_matrix = distance_eval.to_numpy()
-    m_ap, (top_1, pr_a_k5) = calc_map_prak(distance_matrix, distance_eval.columns, positive_pairs, negative_pairs)
+    distance_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+    m_ap, (top_1, pr_a_k5) = calc_map_prak(distance_matrix, np.arange(len(distance_matrix)), positive_pairs)
 
     m_ap_meter.update(m_ap)
     top1_meter.update(top_1)

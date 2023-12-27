@@ -368,7 +368,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             targets.shape[0], n
         ).t() == targets.expand(n, targets.shape[0])
 
-        pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+        # pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
         groups = []
         for j in range(n):
             it = torch.tensor([j], device=targets.device)

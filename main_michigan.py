@@ -57,7 +57,7 @@ def get_args_parser():
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
-    parser.add_argument('--m', default=5, type=int)
+    parser.add_argument('--m_per_class', default=5, type=int)
 
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
@@ -162,7 +162,7 @@ def train_dino(args):
         transform
     ])
     dataset = MichiganDataset(args.data_path, MichiganDataset.Split.TRAIN, transform)
-    sampler = MPerClassSampler(dataset.data_labels, m=args.m, length_before_new_iter=len(dataset) * args.m,
+    sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.m,
                                repeat_same_class=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,

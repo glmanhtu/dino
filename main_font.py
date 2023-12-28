@@ -60,7 +60,7 @@ def get_args_parser():
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
-    parser.add_argument('--m', default=5, type=int)
+    parser.add_argument('--m_per_class', default=5, type=int)
 
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
@@ -184,7 +184,7 @@ def train_dino(args):
     data_loader = FontDataLoader(
         datasets,
         batch_size=args.batch_size_per_gpu,
-        m=args.m,
+        m=args.m_per_class,
         numb_workers=args.num_workers,
         pin_memory=True,
         repeat=1,

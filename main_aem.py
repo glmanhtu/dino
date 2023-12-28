@@ -187,7 +187,7 @@ def train_dino(args):
     data_loader = FontDataLoader(
         datasets,
         batch_size=args.batch_size_per_gpu,
-        m=args.m,
+        m=args.m_per_class,
         numb_workers=args.num_workers,
         pin_memory=True,
         repeat=10,

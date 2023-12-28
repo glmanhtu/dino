@@ -32,6 +32,7 @@ from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
 from ml_engine.data.samplers import MPerClassSampler
 from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
 from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
+from ml_engine.preprocessing.transforms import PadCenterCrop
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
 from torchvision import models as torchvision_models
@@ -161,7 +162,8 @@ def train_dino(args):
         transform
     ])
     dataset = MichiganDataset(args.data_path, MichiganDataset.Split.TRAIN, transform)
-    sampler = MPerClassSampler(dataset.data_labels, m=args.m, length_before_new_iter=len(dataset) * args.m)
+    sampler = MPerClassSampler(dataset.data_labels, m=args.m, length_before_new_iter=len(dataset) * args.m,
+                               repeat_same_class=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,
         sampler=sampler,
@@ -172,7 +174,7 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.RandomCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
+        PadCenterCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])

@@ -162,7 +162,7 @@ def train_dino(args):
         transform
     ])
     dataset = MichiganDataset(args.data_path, MichiganDataset.Split.TRAIN, transform)
-    sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.m,
+    sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.m_per_class,
                                repeat_same_class=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,

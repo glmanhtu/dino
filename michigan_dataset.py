@@ -69,6 +69,8 @@ class MichiganDataset(Dataset):
         self.data = []
         self.data_labels = []
         for img in self.labels:
+            if split.is_val() and len(images[img]) < 2:
+                continue
             for fragment in sorted(images[img]):
                 self.data.append((img, fragment))
                 self.data_labels.append(self.__label_idxes[img])

@@ -456,7 +456,7 @@ def validate_dataloader(data_loader, model):
 
     criterion = NegativeLoss(BatchDotProduct(reduction='none'))
     distance_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
-    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix, labels)
+    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels)
 
     m_ap_meter.update(m_ap)
     top1_meter.update(top1)

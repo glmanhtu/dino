@@ -154,8 +154,8 @@ def train_dino(args):
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        t_im_size=224,
-        s_im_size=96
+        t_im_size=512,
+        s_im_size=192
     )
 
     transform = torchvision.transforms.Compose([
@@ -175,7 +175,7 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        PadCenterCrop((224, 224), pad_if_needed=True, fill=(255, 255, 255)),
+        PadCenterCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
@@ -454,8 +454,9 @@ def validate_dataloader(data_loader, model):
     embeddings = torch.cat(embeddings)
     labels = torch.cat(labels)
 
-    criterion = NegativeLoss(BatchDotProduct(reduction='none'))
-    distance_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+    criterion = BatchDotProduct(reduction='none')
+    similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+    distance_matrix = 1 - similarity_matrix
     m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
 
     m_ap_meter.update(m_ap)

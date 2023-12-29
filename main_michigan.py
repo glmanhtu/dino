@@ -175,7 +175,7 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        PadCenterCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
+        PadCenterCrop((224, 224), pad_if_needed=True, fill=(255, 255, 255)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])

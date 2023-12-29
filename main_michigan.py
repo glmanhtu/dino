@@ -154,8 +154,8 @@ def train_dino(args):
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        t_im_size=512,
-        s_im_size=192
+        t_im_size=224,
+        s_im_size=96
     )
 
     transform = torchvision.transforms.Compose([
@@ -366,12 +366,12 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
         targets = targets.cuda()
         n = targets.size(0)
-        # eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+        eyes_ = torch.eye(n, dtype=torch.bool).cuda()
         pos_mask = targets.expand(
             targets.shape[0], n
         ).t() == targets.expand(n, targets.shape[0])
 
-        # pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+        pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
         groups = []
         for j in range(n):
             it = torch.tensor([j], device=targets.device)

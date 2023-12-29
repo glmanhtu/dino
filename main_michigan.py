@@ -40,6 +40,7 @@ from torchvision import transforms
 
 import utils
 import vision_transformer as vits
+import wi19_evaluate
 from michigan_dataset import MichiganDataset
 from vision_transformer import DINOHead
 
@@ -339,12 +340,12 @@ def validation(dataset, teacher_without_ddp):
         pin_memory=True,
         drop_last=False,
     )
-    m_ap, top1, pra5 = validate_dataloader(data_loader, teacher_without_ddp)
+    m_ap, top1, pra10 = validate_dataloader(data_loader, teacher_without_ddp)
 
     print(
         f'mAP {m_ap:.4f}\t'
         f'top1 {top1:.3f}\t'
-        f'pr@k10 {pra5:.3f}\t')
+        f'pr@k10 {pra10:.3f}\t')
 
     eval_loss = 1 - m_ap
     return eval_loss
@@ -365,7 +366,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
         targets = targets.cuda()
         n = targets.size(0)
-        eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+        # eyes_ = torch.eye(n, dtype=torch.bool).cuda()
         pos_mask = targets.expand(
             targets.shape[0], n
         ).t() == targets.expand(n, targets.shape[0])
@@ -431,7 +432,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
 def validate_dataloader(data_loader, model):
     batch_time, m_ap_meter = AverageMeter(), AverageMeter()
-    top1_meter, pk5_meter = AverageMeter(), AverageMeter()
+    top1_meter, pk10_meter = AverageMeter(), AverageMeter()
 
     end = time.time()
     embeddings, labels = [], []
@@ -452,26 +453,18 @@ def validate_dataloader(data_loader, model):
 
     embeddings = torch.cat(embeddings)
     labels = torch.cat(labels)
-    groups = {}
-    for idx, label in enumerate(labels.numpy()):
-        groups.setdefault(label, []).append(idx)
-
-    positive_pairs = {}
-    for idx, label in enumerate(labels.numpy()):
-        for item in groups[label]:
-            positive_pairs.setdefault(idx, set([])).add(item)
 
     criterion = NegativeLoss(BatchDotProduct(reduction='none'))
     distance_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
-    m_ap, (top_1, pr_a_k5) = calc_map_prak(distance_matrix, np.arange(len(distance_matrix)), positive_pairs)
+    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix, labels)
 
     m_ap_meter.update(m_ap)
-    top1_meter.update(top_1)
-    pk5_meter.update(pr_a_k5)
+    top1_meter.update(top1)
+    pk10_meter.update(pr_a_k10)
 
-    AverageMeter.reduces(m_ap_meter, top1_meter, pk5_meter)
+    AverageMeter.reduces(m_ap_meter, top1_meter, pk10_meter)
 
-    return m_ap_meter.avg, top1_meter.avg, pk5_meter.avg
+    return m_ap_meter.avg, top1_meter.avg, pk10_meter.avg
 
 
 class DINOLoss(nn.Module):

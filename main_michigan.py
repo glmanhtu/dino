@@ -444,6 +444,7 @@ def validate_dataloader(data_loader, model, n_times=1):
     end = time.time()
     print('Starting to evaluate...')
     sim_matrices = []
+    sim_labels = None
     for _ in range(n_times):
         embeddings, labels = [], []
         for idx, (images, targets) in enumerate(data_loader):
@@ -462,6 +463,10 @@ def validate_dataloader(data_loader, model, n_times=1):
 
         embeddings = torch.cat(embeddings)
         labels = torch.cat(labels)
+        if sim_labels is None:
+            sim_labels = labels
+        else:
+            assert torch.equal(sim_labels, labels)
 
         criterion = BatchDotProduct(reduction='none')
         similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
@@ -469,7 +474,7 @@ def validate_dataloader(data_loader, model, n_times=1):
 
     similarity_matrix = torch.max(torch.stack(sim_matrices), dim=0).values
     distance_matrix = 1 - similarity_matrix
-    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
+    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), sim_labels.numpy())
 
     m_ap_meter.update(m_ap)
     top1_meter.update(top1)

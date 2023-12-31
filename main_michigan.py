@@ -32,11 +32,12 @@ from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
 from ml_engine.data.samplers import MPerClassSampler
 from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
 from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
-from ml_engine.preprocessing.transforms import PadCenterCrop
+from ml_engine.preprocessing.transforms import PadCenterCrop, ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
 from torchvision import models as torchvision_models
 from torchvision import transforms
+import albumentations as A
 
 import utils
 import vision_transformer as vits
@@ -535,6 +536,9 @@ class DataAugmentationDINO(object):
                 p=0.8
             ),
             transforms.RandomGrayscale(p=0.2),
+            ACompose([
+                A.CLAHE()
+            ])
         ])
         normalize = transforms.Compose([
             transforms.ToTensor(),

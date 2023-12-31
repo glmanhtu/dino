@@ -442,10 +442,10 @@ def validate_dataloader(data_loader, model, n_times=1):
     top1_meter, pk10_meter = AverageMeter(), AverageMeter()
 
     end = time.time()
-    embeddings, labels = [], []
     print('Starting to evaluate...')
     sim_matrices = []
     for _ in range(n_times):
+        embeddings, labels = [], []
         for idx, (images, targets) in enumerate(data_loader):
             images = images.cuda(non_blocking=True)
 

@@ -60,6 +60,8 @@ def get_args_parser():
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
+    parser.add_argument('--n_evals', default=20, type=int)
+    parser.add_argument('--im_size', default=384, type=int)
 
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
@@ -149,18 +151,19 @@ def train_dino(args):
     print("git:\n  {}\n".format(utils.get_sha()))
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
+    im_size = args.im_size
 
     # ============ preparing data ... ============
     transform = DataAugmentationDINO(
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        t_im_size=512,
-        s_im_size=192
+        t_im_size=args.im_size,
+        s_im_size=args.im_size // 3
     )
 
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.RandomCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
+        torchvision.transforms.RandomCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
         transform
     ])
     dataset = MichiganDataset(args.data_path, MichiganDataset.Split.TRAIN, transform)
@@ -176,7 +179,7 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        PadCenterCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
+        torchvision.transforms.RandomCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
@@ -189,6 +192,7 @@ def train_dino(args):
     # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
     if args.arch in vits.__dict__.keys():
         student = vits.__dict__[args.arch](
+            img_size=im_size,
             patch_size=args.patch_size,
             drop_path_rate=args.drop_path_rate,  # stochastic depth
         )
@@ -341,7 +345,7 @@ def validation(dataset, teacher_without_ddp):
         pin_memory=True,
         drop_last=False,
     )
-    m_ap, top1, pra10 = validate_dataloader(data_loader, teacher_without_ddp)
+    m_ap, top1, pra10 = validate_dataloader(data_loader, teacher_without_ddp, n_times=args.n_evals)
 
     print(
         f'mAP {m_ap:.4f}\t'
@@ -431,32 +435,37 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def validate_dataloader(data_loader, model):
+def validate_dataloader(data_loader, model, n_times=1):
     batch_time, m_ap_meter = AverageMeter(), AverageMeter()
     top1_meter, pk10_meter = AverageMeter(), AverageMeter()
 
     end = time.time()
     embeddings, labels = [], []
     print('Starting to evaluate...')
-    for idx, (images, targets) in enumerate(data_loader):
-        images = images.cuda(non_blocking=True)
+    sim_matrices = []
+    for _ in range(n_times):
+        for idx, (images, targets) in enumerate(data_loader):
+            images = images.cuda(non_blocking=True)
 
-        # compute output
-        with torch.cuda.amp.autocast(enabled=args.use_fp16):
-            embs = model(images)
+            # compute output
+            with torch.cuda.amp.autocast(enabled=args.use_fp16):
+                embs = model(images)
 
-        embeddings.append(embs)
-        labels.append(targets)
+            embeddings.append(embs)
+            labels.append(targets)
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-    embeddings = torch.cat(embeddings)
-    labels = torch.cat(labels)
+        embeddings = torch.cat(embeddings)
+        labels = torch.cat(labels)
 
-    criterion = BatchDotProduct(reduction='none')
-    similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+        criterion = BatchDotProduct(reduction='none')
+        similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+        sim_matrices.append(similarity_matrix)
+
+    similarity_matrix = torch.max(torch.stack(sim_matrices), dim=0).values
     distance_matrix = 1 - similarity_matrix
     m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
 
@@ -529,8 +538,6 @@ class DINOLoss(nn.Module):
 class DataAugmentationDINO(object):
     def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, t_im_size=224, s_im_size=96):
         flip_and_color_jitter = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.5),
             transforms.RandomApply(
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                 p=0.8

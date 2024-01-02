@@ -71,10 +71,10 @@ class MichiganDataset(Dataset):
         for img in self.labels:
             if split.is_val() and len(images[img]) < 2:
                 continue
-            width, height = imagesize.get(images[img])
-            if width * height < min_size * min_size:
-                continue
             for fragment in sorted(images[img]):
+                width, height = imagesize.get(fragment)
+                if width * height < min_size * min_size:
+                    continue
                 self.data.append((img, fragment))
                 self.data_labels.append(self.__label_idxes[img])
 

@@ -31,19 +31,17 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
-from ml_engine.data.samplers import MPerClassSampler
 from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
 from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
 from ml_engine.preprocessing.transforms import ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
-from torchvision import datasets, transforms
+from torchvision import transforms
 from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
-from eval_knn import extract_features
-from font_dataset import FontDataset, FontDataLoader
+from datasets.font_dataset import FontDataset, FontDataLoader
 from vision_transformer import DINOHead
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
@@ -62,18 +60,18 @@ def get_args_parser():
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
 
-    parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
+    parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
         mixed precision training (--use_fp16 false) to avoid unstabilities.""")
     parser.add_argument('--out_dim', default=65536, type=int, help="""Dimensionality of
         the DINO head output. For complex and large datasets large values (like 65k) work well.""")
-    parser.add_argument('--norm_last_layer', default=True, type=utils.bool_flag,
+    parser.add_argument('--norm_last_layer', default=False, type=utils.bool_flag,
         help="""Whether or not to weight normalize the last layer of the DINO head.
         Not normalizing leads to better performance but can make the training unstable.
         In our experiments, we typically set this paramater to False with vit_small and True with vit_base.""")
-    parser.add_argument('--momentum_teacher', default=0.996, type=float, help="""Base EMA
+    parser.add_argument('--momentum_teacher', default=0.9995, type=float, help="""Base EMA
         parameter for teacher update. The value is increased to 1 during training with cosine schedule.
         We recommend setting a higher value with small batches: for example use 0.9995 with batch size of 256.""")
     parser.add_argument('--use_bn_in_head', default=False, type=utils.bool_flag,

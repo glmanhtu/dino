@@ -32,21 +32,17 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
-from ml_engine.data.samplers import MPerClassSampler
-from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
 from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
-from ml_engine.preprocessing.transforms import ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
-from torchvision import datasets, transforms
+from torchvision import transforms
 from ml_engine.evaluation.distances import compute_distance_matrix
 from torchvision import models as torchvision_models
-from ml_engine.preprocessing.transforms import ACompose, RandomResize, PadCenterCrop
+from ml_engine.preprocessing.transforms import ACompose, PadCenterCrop
 import utils
 import vision_transformer as vits
-from aem_dataset import AEMLetterDataset, load_triplet_file
-from eval_knn import extract_features
-from font_dataset import FontDataset, FontDataLoader
+from datasets.aem_dataset import AEMLetterDataset, load_triplet_file
+from datasets.font_dataset import FontDataLoader
 from vision_transformer import DINOHead
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
@@ -64,6 +60,7 @@ def get_args_parser():
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--m', default=5, type=int)
+    parser.add_argument('--im_size', default=112, type=int)
 
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
@@ -160,23 +157,24 @@ def train_dino(args):
     print("git:\n  {}\n".format(utils.get_sha()))
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
+    im_size = args.im_size
 
     # ============ preparing data ... ============
     transform = DataAugmentationDINO(
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        t_im_size=112,
-        s_im_size=48
+        t_im_size=im_size,
+        s_im_size=im_size // 3
     )
 
     transform = torchvision.transforms.Compose([
         ACompose([
-            A.LongestMaxSize(max_size=112),
+            A.LongestMaxSize(max_size=im_size),
             A.ShiftScaleRotate(shift_limit=0, scale_limit=0.1, rotate_limit=15, p=0.5, value=(255, 255, 255),
                                border_mode=cv2.BORDER_CONSTANT),
         ]),
-        torchvision.transforms.RandomCrop(112, pad_if_needed=True, fill=255),
+        torchvision.transforms.RandomCrop(im_size, pad_if_needed=True, fill=255),
         transform
     ])
     datasets = []
@@ -196,9 +194,9 @@ def train_dino(args):
 
     transform = torchvision.transforms.Compose([
         ACompose([
-            A.LongestMaxSize(max_size=112),
+            A.LongestMaxSize(max_size=im_size),
         ]),
-        PadCenterCrop(112, pad_if_needed=True, fill=255),
+        PadCenterCrop(im_size, pad_if_needed=True, fill=255),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
@@ -214,10 +212,13 @@ def train_dino(args):
     # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
     if args.arch in vits.__dict__.keys():
         student = vits.__dict__[args.arch](
+            img_size=[im_size],
             patch_size=args.patch_size,
             drop_path_rate=args.drop_path_rate,  # stochastic depth
         )
-        teacher = vits.__dict__[args.arch](patch_size=args.patch_size)
+        teacher = vits.__dict__[args.arch](
+            img_size=[im_size],
+            patch_size=args.patch_size)
         embed_dim = student.embed_dim
     # if the network is a XCiT
     elif args.arch in torch.hub.list("facebookresearch/xcit:main"):

@@ -36,7 +36,7 @@ class _Split(Enum):
 class MichiganDataset(Dataset):
     Split = Union[_Split]
 
-    def __init__(self, dataset_path: str, split: "MichiganDataset.Split", transforms):
+    def __init__(self, dataset_path: str, split: "MichiganDataset.Split", transforms, min_size=112):
         self.dataset_path = dataset_path
         files = glob.glob(os.path.join(dataset_path, '**', '*.png'), recursive=True)
         files.extend(glob.glob(os.path.join(dataset_path, '**', '*.jpg'), recursive=True))
@@ -71,6 +71,9 @@ class MichiganDataset(Dataset):
         for img in self.labels:
             if split.is_val() and len(images[img]) < 2:
                 continue
+            width, height = imagesize.get(images[img])
+            if width * height < min_size * min_size:
+                continue
             for fragment in sorted(images[img]):
                 self.data.append((img, fragment))
                 self.data_labels.append(self.__label_idxes[img])
@@ -84,7 +87,7 @@ class MichiganDataset(Dataset):
         (img_name, fragment) = self.data[idx]
 
         with Image.open(fragment) as img:
-            anchor_img = self.transforms(img.convert('RGB'))
+            image = self.transforms(img.convert('RGB'))
 
-        label = self.__label_idxes[img_name]
-        return anchor_img, label
+        label = self.data_labels[idx]
+        return image, label

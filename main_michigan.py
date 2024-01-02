@@ -28,10 +28,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from PIL import Image
-from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
+from ml_engine.criterion.losses import BatchDotProduct
 from ml_engine.data.samplers import MPerClassSampler
 from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
-from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
+from ml_engine.evaluation.metrics import AverageMeter
 from ml_engine.preprocessing.transforms import PadCenterCrop, ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
@@ -42,7 +42,8 @@ import albumentations as A
 import utils
 import vision_transformer as vits
 import wi19_evaluate
-from michigan_dataset import MichiganDataset
+from datasets.geshaem_dataset import GeshaemPatch
+from datasets.michigan_dataset import MichiganDataset
 from vision_transformer import DINOHead
 
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
@@ -60,21 +61,20 @@ def get_args_parser():
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
-    parser.add_argument('--n_evals', default=20, type=int)
-    parser.add_argument('--im_size', default=384, type=int)
+    parser.add_argument('--im_size', default=512, type=int)
 
-    parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
+    parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
         mixed precision training (--use_fp16 false) to avoid unstabilities.""")
     parser.add_argument('--out_dim', default=65536, type=int, help="""Dimensionality of
         the DINO head output. For complex and large datasets large values (like 65k) work well.""")
-    parser.add_argument('--norm_last_layer', default=True, type=utils.bool_flag,
+    parser.add_argument('--norm_last_layer', default=False, type=utils.bool_flag,
         help="""Whether or not to weight normalize the last layer of the DINO head.
         Not normalizing leads to better performance but can make the training unstable.
         In our experiments, we typically set this paramater to False with vit_small and True with vit_base.""")
-    parser.add_argument('--momentum_teacher', default=0.996, type=float, help="""Base EMA
+    parser.add_argument('--momentum_teacher', default=0.9995, type=float, help="""Base EMA
         parameter for teacher update. The value is increased to 1 during training with cosine schedule.
         We recommend setting a higher value with small batches: for example use 0.9995 with batch size of 256.""")
     parser.add_argument('--use_bn_in_head', default=False, type=utils.bool_flag,
@@ -135,6 +135,9 @@ def get_args_parser():
     # Misc
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
         help='Please specify path to the ImageNet training data.')
+    parser.add_argument('--dataset', default='michigan', type=str, choices=['michigan', 'geshaem'])
+    parser.add_argument('--pretrained_path', default='/path/to/imagenet/train/', type=str,
+                        help='Please specify path to the pretrained model')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
@@ -143,6 +146,15 @@ def get_args_parser():
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     return parser
+
+
+def get_dataset(name, data_path, data_part, transform):
+    if name == 'michigan':
+        return MichiganDataset(data_path, MichiganDataset.Split.from_string(data_part), transform)
+    elif name == 'geshaem':
+        return GeshaemPatch(data_path, GeshaemPatch.Split.from_string(data_part), transform=transform)
+    else:
+        raise NotImplementedError('Dataset {} not implemented'.format(name))
 
 
 def train_dino(args):
@@ -166,9 +178,9 @@ def train_dino(args):
         torchvision.transforms.RandomCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
         transform
     ])
-    dataset = MichiganDataset(args.data_path, MichiganDataset.Split.TRAIN, transform)
+    dataset = get_dataset(args.dataset, args.data_path, 'train', transform)
     sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.m_per_class,
-                               repeat_same_class=True)
+                               repeat_same_class=False)
     data_loader = torch.utils.data.DataLoader(
         dataset,
         sampler=sampler,
@@ -179,12 +191,12 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.RandomCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
+        PadCenterCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
 
-    val_dataset = MichiganDataset(args.data_path, MichiganDataset.Split.VAL, transform)
+    val_dataset = get_dataset(args.dataset, args.data_path, 'validation', transform)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
@@ -238,6 +250,10 @@ def train_dino(args):
     else:
         # teacher_without_ddp and teacher are the same thing
         teacher_without_ddp = teacher
+
+    if os.path.isfile(args.pretrained_path):
+        utils.load_pretrained_weights(student, args.pretrained_path, 'teacher', args.arch, args.patch_size)
+
     student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu])
     # teacher and student start with the same weights
     teacher_without_ddp.load_state_dict(student.module.state_dict())
@@ -305,6 +321,11 @@ def train_dino(args):
     for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
 
+        if epoch == 0:
+            val_loss = validation(val_dataset, teacher_without_ddp)
+            best_loss = val_loss
+            print('Initial val loss: {:.4f}'.format(val_loss))
+
         # ============ training one epoch of DINO ... ============
         train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss,
             data_loader, optimizer, lr_schedule, wd_schedule, momentum_schedule,
@@ -347,7 +368,7 @@ def validation(dataset, teacher_without_ddp):
         pin_memory=True,
         drop_last=False,
     )
-    m_ap, top1, pra10 = validate_dataloader(data_loader, teacher_without_ddp, n_times=args.n_evals)
+    m_ap, top1, pra10 = validate_dataloader(data_loader, teacher_without_ddp)
 
     print(
         f'mAP {m_ap:.4f}\t'
@@ -362,6 +383,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, args):
     metric_logger = utils.MetricLogger(delimiter="  ")
+    student.train()
+    teacher.train()
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
     for it, (images, targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
         # update weight decay and learning rate according to their schedule
@@ -437,44 +460,38 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def validate_dataloader(data_loader, model, n_times=1):
+@torch.no_grad()
+def validate_dataloader(data_loader, model):
+    model.eval()
     batch_time, m_ap_meter = AverageMeter(), AverageMeter()
     top1_meter, pk10_meter = AverageMeter(), AverageMeter()
 
     end = time.time()
     print('Starting to evaluate...')
-    sim_matrices = []
-    sim_labels = None
-    for _ in range(n_times):
-        embeddings, labels = [], []
-        for idx, (images, targets) in enumerate(data_loader):
-            images = images.cuda(non_blocking=True)
+    embeddings, labels = [], []
+    for idx, (images, targets) in enumerate(data_loader):
+        images = images.cuda(non_blocking=True)
 
-            # compute output
-            with torch.cuda.amp.autocast(enabled=args.use_fp16):
-                embs = model(images)
+        # compute output
+        with torch.cuda.amp.autocast(enabled=args.use_fp16):
+            embs = model(images)
 
-            embeddings.append(embs)
-            labels.append(targets)
+        embeddings.append(embs)
+        labels.append(targets)
 
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
 
-        embeddings = torch.cat(embeddings)
-        labels = torch.cat(labels)
-        if sim_labels is None:
-            sim_labels = labels
-        else:
-            assert torch.equal(sim_labels, labels)
+    embeddings = torch.cat(embeddings)
+    labels = torch.cat(labels)
 
-        criterion = BatchDotProduct(reduction='none')
-        similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
-        sim_matrices.append(similarity_matrix)
+    criterion = BatchDotProduct(reduction='none')
+    similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
 
-    similarity_matrix = torch.max(torch.stack(sim_matrices), dim=0).values
     distance_matrix = 1 - similarity_matrix
-    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), sim_labels.numpy())
+    print(f'N samples: {len(embeddings)}, N categories: {len(torch.unique(labels))}')
+    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
 
     m_ap_meter.update(m_ap)
     top1_meter.update(top1)
@@ -545,6 +562,8 @@ class DINOLoss(nn.Module):
 class DataAugmentationDINO(object):
     def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, t_im_size=224, s_im_size=96):
         flip_and_color_jitter = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
             transforms.RandomApply(
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                 p=0.8

@@ -141,6 +141,7 @@ def get_args_parser():
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
+    parser.add_argument('--repeat_dataset', default=5, type=int, help='Random seed.')
     parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
@@ -179,7 +180,7 @@ def train_dino(args):
         transform
     ])
     dataset = get_dataset(args.dataset, args.data_path, 'train', transform)
-    sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.m_per_class,
+    sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.repeat_dataset,
                                repeat_same_class=False)
     data_loader = torch.utils.data.DataLoader(
         dataset,

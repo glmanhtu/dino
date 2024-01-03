@@ -60,6 +60,7 @@ def get_args_parser():
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
+    parser.add_argument('--self_loss', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
     parser.add_argument('--im_size', default=512, type=int)
 
@@ -397,12 +398,14 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
         targets = targets.cuda()
         n = targets.size(0)
-        eyes_ = torch.eye(n, dtype=torch.bool).cuda()
         pos_mask = targets.expand(
             targets.shape[0], n
         ).t() == targets.expand(n, targets.shape[0])
 
-        pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+        if not args.self_loss:
+            eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+            pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+
         groups = []
         for j in range(n):
             it = torch.tensor([j], device=targets.device)

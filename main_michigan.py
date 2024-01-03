@@ -60,7 +60,7 @@ def get_args_parser():
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
-    parser.add_argument('--self_loss', default=False, type=utils.bool_flag)
+    parser.add_argument('--repeat_same_class', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
     parser.add_argument('--im_size', default=512, type=int)
 
@@ -182,7 +182,7 @@ def train_dino(args):
     ])
     dataset = get_dataset(args.dataset, args.data_path, 'train', transform)
     sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.repeat_dataset,
-                               repeat_same_class=False)
+                               repeat_same_class=args.repeat_same_class)
     data_loader = torch.utils.data.DataLoader(
         dataset,
         sampler=sampler,
@@ -402,9 +402,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             targets.shape[0], n
         ).t() == targets.expand(n, targets.shape[0])
 
-        if not args.self_loss:
-            eyes_ = torch.eye(n, dtype=torch.bool).cuda()
-            pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+        eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+        pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
 
         groups = []
         for j in range(n):

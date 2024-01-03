@@ -59,7 +59,7 @@ def get_args_parser():
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
-    parser.add_argument('--m', default=5, type=int)
+    parser.add_argument('--m_per_class', default=5, type=int)
     parser.add_argument('--im_size', default=112, type=int)
 
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
@@ -69,7 +69,7 @@ def get_args_parser():
         mixed precision training (--use_fp16 false) to avoid unstabilities.""")
     parser.add_argument('--out_dim', default=65536, type=int, help="""Dimensionality of
         the DINO head output. For complex and large datasets large values (like 65k) work well.""")
-    parser.add_argument('--norm_last_layer', default=True, type=utils.bool_flag,
+    parser.add_argument('--norm_last_layer', default=False, type=utils.bool_flag,
         help="""Whether or not to weight normalize the last layer of the DINO head.
         Not normalizing leads to better performance but can make the training unstable.
         In our experiments, we typically set this paramater to False with vit_small and True with vit_base.""")
@@ -171,7 +171,7 @@ def train_dino(args):
     transform = torchvision.transforms.Compose([
         ACompose([
             A.LongestMaxSize(max_size=im_size),
-            A.ShiftScaleRotate(shift_limit=0, scale_limit=0.1, rotate_limit=15, p=0.5, value=(255, 255, 255),
+            A.ShiftScaleRotate(shift_limit=0, scale_limit=0, rotate_limit=15, p=0.5, value=(255, 255, 255),
                                border_mode=cv2.BORDER_CONSTANT),
         ]),
         torchvision.transforms.RandomCrop(im_size, pad_if_needed=True, fill=255),
@@ -400,6 +400,8 @@ def validation(datasets, teacher_without_ddp):
 def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader,
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, args):
+    student.train()
+    teacher.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
     for it, (batch_images, batch_targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
@@ -485,7 +487,9 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
+@torch.no_grad()
 def validate_dataloader(data_loader, model, triplet_def):
+    model.eval()
     batch_time, m_ap_meter = AverageMeter(), AverageMeter()
     top1_meter, pk5_meter = AverageMeter(), AverageMeter()
 
@@ -610,6 +614,9 @@ class DataAugmentationDINO(object):
                 p=0.8
             ),
             transforms.RandomGrayscale(p=0.2),
+            ACompose([
+                A.CLAHE()
+            ])
         ])
         normalize = transforms.Compose([
             transforms.ToTensor(),

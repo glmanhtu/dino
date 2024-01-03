@@ -516,7 +516,7 @@ def validate_dataloader(data_loader, model, triplet_def):
 
     # embeddings = F.normalize(embeddings, p=2, dim=1)
     features = {}
-    for feature, target in zip(embeddings.cpu(), labels.numpy()):
+    for feature, target in zip(embeddings.cpu().float(), labels.numpy()):
         tm = data_loader.dataset.labels[target]
         features.setdefault(tm, []).append(feature)
 

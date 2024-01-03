@@ -59,8 +59,9 @@ def get_args_parser():
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
+    parser.add_argument('--im_size', default=112, type=int)
 
-    parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
+    parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
@@ -71,7 +72,7 @@ def get_args_parser():
         help="""Whether or not to weight normalize the last layer of the DINO head.
         Not normalizing leads to better performance but can make the training unstable.
         In our experiments, we typically set this paramater to False with vit_small and True with vit_base.""")
-    parser.add_argument('--momentum_teacher', default=0.9995, type=float, help="""Base EMA
+    parser.add_argument('--momentum_teacher', default=0.996, type=float, help="""Base EMA
         parameter for teacher update. The value is increased to 1 during training with cosine schedule.
         We recommend setting a higher value with small batches: for example use 0.9995 with batch size of 256.""")
     parser.add_argument('--use_bn_in_head', default=False, type=utils.bool_flag,
@@ -152,14 +153,15 @@ def train_dino(args):
     print("git:\n  {}\n".format(utils.get_sha()))
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
+    im_size = args.im_size
 
     # ============ preparing data ... ============
     transform = DataAugmentationDINO(
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
-        t_im_size=112,
-        s_im_size=48
+        t_im_size=im_size,
+        s_im_size=im_size // 3
     )
     stroke_transform = torchvision.transforms.Compose([
         torchvision.transforms.RandomAffine(10, translate=(0.1, 0.1), fill=0),
@@ -171,13 +173,13 @@ def train_dino(args):
         ]),
     ])
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.Resize((112, 112)),
+        torchvision.transforms.Resize((im_size, im_size)),
         transform
     ])
     datasets = []
     for letter in args.train_letters:
         ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.TRAIN, stroke_transform, transform,
-                         letter, (224, 224))
+                         letter, (im_size * 2, im_size * 2))
         datasets.append(ds)
     data_loader = FontDataLoader(
         datasets,
@@ -190,7 +192,7 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.Resize((112, 112)),
+        torchvision.transforms.Resize((im_size, im_size)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
@@ -198,7 +200,7 @@ def train_dino(args):
     val_datasets = []
     for letter in args.val_letters:
         ds = FontDataset(args.data_path, args.data_path_bg, FontDataset.Split.VAL, stroke_transform, transform,
-                         letter, (224, 224))
+                         letter, (im_size * 2, im_size * 2))
         val_datasets.append(ds)
 
     # ============ building student and teacher networks ... ============
@@ -207,10 +209,13 @@ def train_dino(args):
     # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
     if args.arch in vits.__dict__.keys():
         student = vits.__dict__[args.arch](
+            img_size=[im_size],
             patch_size=args.patch_size,
             drop_path_rate=args.drop_path_rate,  # stochastic depth
         )
-        teacher = vits.__dict__[args.arch](patch_size=args.patch_size)
+        teacher = vits.__dict__[args.arch](
+            img_size=[im_size],
+            patch_size=args.patch_size)
         embed_dim = student.embed_dim
     # if the network is a XCiT
     elif args.arch in torch.hub.list("facebookresearch/xcit:main"):
@@ -387,6 +392,8 @@ def validation(datasets, teacher_without_ddp):
 def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader,
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, args):
+    student.train()
+    teacher.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
     for it, (batch_images, batch_targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
@@ -472,7 +479,9 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
+@torch.no_grad()
 def validate_dataloader(data_loader, model):
+    model.eval()
     batch_time, m_ap_meter = AverageMeter(), AverageMeter()
     top1_meter, pk5_meter = AverageMeter(), AverageMeter()
 
@@ -582,6 +591,9 @@ class DataAugmentationDINO(object):
                 p=0.8
             ),
             transforms.RandomGrayscale(p=0.2),
+            ACompose([
+                A.CLAHE()
+            ])
         ])
         normalize = transforms.Compose([
             transforms.ToTensor(),

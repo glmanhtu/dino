@@ -520,7 +520,7 @@ def validate_dataloader(data_loader, model, triplet_def):
         tm = data_loader.dataset.labels[target]
         features.setdefault(tm, []).append(feature)
 
-    features = {k: torch.stack(v).cuda() for k, v in features.items()}
+    features = {k: torch.stack(v) for k, v in features.items()}
     criterion = NegativeLoss(BatchDotProduct(reduction='none'))
     distance_df = compute_distance_matrix(features, reduction='mean', distance_fn=criterion)
 

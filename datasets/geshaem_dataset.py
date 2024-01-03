@@ -65,6 +65,7 @@ class GeshaemPatch(VisionDataset):
         self,
         root: str,
         split: "GeshaemPatch.Split",
+        im_size,
         transforms: Optional[Callable] = None,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
@@ -104,11 +105,16 @@ class GeshaemPatch(VisionDataset):
                 fragment_ids = fragment.split("_")
                 if fragment_ids[0] not in self.fragment_to_group:
                     continue
-                labels.append(self.get_fragment_idx(fragment))
-                data.append(img_path)
+
+                width, height = imagesize.get(img_path)
+                ratio = max(round((width * height) / (im_size * im_size)), 1) if not split.is_val() else 1
+                for _ in range(int(ratio)):
+                    labels.append(self.get_fragment_idx(fragment))
+                    data.append(img_path)
 
             if split.is_val() and len(data) < 2:
                 continue
+
             self.data.extend(data)
             self.data_labels.extend(labels)
 

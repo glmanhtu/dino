@@ -150,11 +150,11 @@ def get_args_parser():
     return parser
 
 
-def get_dataset(name, data_path, data_part, transform):
+def get_dataset(name, data_path, data_part, transform, im_size):
     if name == 'michigan':
         return MichiganDataset(data_path, MichiganDataset.Split.from_string(data_part), transform)
     elif name == 'geshaem':
-        return GeshaemPatch(data_path, GeshaemPatch.Split.from_string(data_part), transform=transform)
+        return GeshaemPatch(data_path, GeshaemPatch.Split.from_string(data_part), transform=transform, im_size=im_size)
     else:
         raise NotImplementedError('Dataset {} not implemented'.format(name))
 
@@ -180,7 +180,7 @@ def train_dino(args):
         torchvision.transforms.RandomCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
         transform
     ])
-    dataset = get_dataset(args.dataset, args.data_path, 'train', transform)
+    dataset = get_dataset(args.dataset, args.data_path, 'train', transform, im_size)
     sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.repeat_dataset,
                                repeat_same_class=args.repeat_same_class)
     data_loader = torch.utils.data.DataLoader(
@@ -198,7 +198,7 @@ def train_dino(args):
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
 
-    val_dataset = get_dataset(args.dataset, args.data_path, 'validation', transform)
+    val_dataset = get_dataset(args.dataset, args.data_path, 'validation', transform, im_size)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions

@@ -112,7 +112,7 @@ class GeshaemPatch(VisionDataset):
                     labels.append(self.get_fragment_idx(fragment))
                     data.append(img_path)
 
-            if split.is_val() and len(data) < 2:
+            if len(data) < 2:
                 continue
 
             self.data.extend(data)

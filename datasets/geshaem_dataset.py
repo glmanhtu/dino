@@ -78,7 +78,7 @@ class GeshaemPatch(VisionDataset):
         self.fragment_to_group = {}
         self.fragment_to_group_id = {}
 
-        images, fragments, groups = self.load_dataset(include_verso, min_size_limit)
+        fragments, groups = self.load_dataset(include_verso, min_size_limit)
 
         for idx, group in enumerate(groups):
             if len(group) < 2 and split.is_val():
@@ -91,27 +91,33 @@ class GeshaemPatch(VisionDataset):
                 for fragment2 in group:
                     self.fragment_to_group.setdefault(fragment, set([])).add(fragment2)
 
-        self.fragments = sorted(fragments)
+        self.fragments = sorted(fragments.keys())
         self.fragment_idx = {x: i for i, x in enumerate(self.fragments)}
 
         self.data = []
         self.data_labels = []
-        for img_path in images:
-            image_name = os.path.basename(os.path.dirname(os.path.dirname(img_path)))
-            fragment, rv, col = parse_name(image_name)
-            fragment_ids = fragment.split("_")
-            if fragment_ids[0] not in self.fragment_to_group:
+        for fragment in self.fragments:
+            data, labels = [], []
+            for img_path in sorted(fragments[fragment]):
+                image_name = os.path.basename(os.path.dirname(os.path.dirname(img_path)))
+                fragment, rv, col = parse_name(image_name)
+                fragment_ids = fragment.split("_")
+                if fragment_ids[0] not in self.fragment_to_group:
+                    continue
+                labels.append(self.get_fragment_idx(fragment))
+                data.append(img_path)
+
+            if split.is_val() and len(data) < 2:
                 continue
-            self.data_labels.append(self.get_fragment_idx(fragment))
-            self.data.append(img_path)
+            self.data.extend(data)
+            self.data_labels.extend(labels)
 
     def get_fragment_idx(self, image_name: str) -> int:
         fragment_id = image_name.split("_")[0]
         return self.fragment_to_group_id[fragment_id]
 
     def load_dataset(self, include_verso, min_size_limit):
-        images = []
-        fragments = set([])
+        fragments = {}
         groups = []
         for img_path in sorted(glob.glob(os.path.join(self.root_dir, '**', '*.jpg'), recursive=True)):
             if img_path.split(os.sep)[-2] != 'papyrus':
@@ -131,10 +137,9 @@ class GeshaemPatch(VisionDataset):
             if width * height < min_size_limit * min_size_limit:
                 continue
 
-            images.append(img_path)
-            fragments.add(image_name)
+            fragments.setdefault(fragment, []).append(img_path)
 
-        return images, fragments, groups
+        return fragments, groups
 
     @property
     def split(self) -> "GeshaemPatch.Split":

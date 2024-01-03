@@ -69,14 +69,17 @@ class MichiganDataset(Dataset):
         self.data = []
         self.data_labels = []
         for img in self.labels:
-            if len(images[img]) < 2:
-                continue
+            data, labels = [], []
             for fragment in sorted(images[img]):
                 width, height = imagesize.get(fragment)
                 if width * height < min_size * min_size:
                     continue
-                self.data.append((img, fragment))
-                self.data_labels.append(self.__label_idxes[img])
+                data.append((img, fragment))
+                labels.append(self.__label_idxes[img])
+
+            if len(data) > 2:
+                self.data.extend(data)
+                self.data_labels.extend(labels)
 
         self.transforms = transforms
 

@@ -114,12 +114,7 @@ class GeshaemPatch(VisionDataset):
                 width, height = imagesize.get(img_path)
                 ratio = max(math.ceil((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
                 for _ in range(int(ratio)):
-                    if split.is_val():
-                        # In evaluation, we evaluate the images across fragments
-                        labels.append(self.get_fragment_idx(fragment))
-                    else:
-                        # In training, we only let the model learn the images from the same fragment
-                        labels.append(idx)
+                    labels.append(idx)
                     data.append(img_path)
 
             if len(data) < 2:
@@ -128,9 +123,9 @@ class GeshaemPatch(VisionDataset):
             self.data.extend(data)
             self.data_labels.extend(labels)
 
-    def get_fragment_idx(self, image_name: str) -> int:
-        fragment_id = image_name.split("_")[0]
-        return self.fragment_to_group_id[fragment_id]
+    def get_group_id(self, fragment_id: int) -> int:
+        fragment = self.fragments[fragment_id]
+        return self.fragment_to_group_id[fragment]
 
     def load_dataset(self, include_verso, min_size_limit):
         fragments = {}

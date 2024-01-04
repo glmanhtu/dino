@@ -61,6 +61,7 @@ def get_args_parser():
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
     parser.add_argument('--im_size', default=112, type=int)
+    parser.add_argument('--repeat_dataset', default=5, type=int)
 
     parser.add_argument('--patch_size', default=8, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
@@ -188,7 +189,7 @@ def train_dino(args):
         m=args.m_per_class,
         numb_workers=args.num_workers,
         pin_memory=True,
-        repeat=1,
+        repeat=args.repeat_dataset,
         repeat_same_class=False
     )
 

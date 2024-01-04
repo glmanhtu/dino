@@ -16,12 +16,16 @@ _Target = int
 class _Split(Enum):
     TRAIN = "train"
     VAL = "validation"
+    TEST = "test"
 
     def is_train(self):
         return self.value == 'train'
 
     def is_val(self):
         return self.value == 'validation'
+
+    def is_test(self):
+        return self.value == 'test'
 
     @staticmethod
     def from_string(name):
@@ -107,7 +111,7 @@ class GeshaemPatch(VisionDataset):
                     continue
 
                 width, height = imagesize.get(img_path)
-                ratio = max(round((width * height) / (im_size * im_size)), 1) if not split.is_val() else 1
+                ratio = max(round((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
                 for _ in range(int(ratio)):
                     if split.is_val():
                         # In evaluation, we evaluate the images across fragments

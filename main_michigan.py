@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
@@ -61,6 +62,7 @@ def get_args_parser():
         we recommend using vit_tiny or vit_small.""")
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--repeat_same_class', default=False, type=utils.bool_flag)
+    parser.add_argument('--testing', default=False, type=utils.bool_flag)
     parser.add_argument('--m_per_class', default=5, type=int)
     parser.add_argument('--im_size', default=512, type=int)
 
@@ -199,6 +201,7 @@ def train_dino(args):
     ])
 
     val_dataset = get_dataset(args.dataset, args.data_path, 'validation', transform, im_size)
+    test_dataset = get_dataset(args.dataset, args.data_path, 'test', transform, im_size)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
@@ -263,6 +266,10 @@ def train_dino(args):
     for p in teacher.parameters():
         p.requires_grad = False
     print(f"Student and Teacher are built: they are both {args.arch} network.")
+
+    if args.testing:
+        testing(test_dataset, teacher_without_ddp)
+        return
 
     # ============ preparing loss ... ============
     dino_loss = DINOLoss(
@@ -461,6 +468,40 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+@torch.no_grad()
+def testing(dataset, model):
+    model.eval()
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+        shuffle=False,
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    print('Starting to evaluate...')
+    embeddings, labels = [], []
+    for idx, (images, _) in enumerate(data_loader):
+        images = images.cuda(non_blocking=True)
+
+        # compute output
+        with torch.cuda.amp.autocast(enabled=args.use_fp16):
+            embs = model(images)
+
+        embeddings.append(embs)
+
+    embeddings = torch.cat(embeddings)
+
+    criterion = BatchDotProduct(reduction='none')
+    similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+
+    labels = [os.path.basename(os.path.dirname(os.path.dirname(x))) for x in dataset.data]
+    similarity_df = pd.DataFrame(similarity_matrix, index=labels, columns=labels)
+    similarity_file = os.path.join(args.output_dir, 'similarity_matrix.csv')
+    similarity_df.to_csv(similarity_file)
 
 
 @torch.no_grad()

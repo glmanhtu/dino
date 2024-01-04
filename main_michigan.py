@@ -201,7 +201,6 @@ def train_dino(args):
     ])
 
     val_dataset = get_dataset(args.dataset, args.data_path, 'validation', transform, im_size)
-    test_dataset = get_dataset(args.dataset, args.data_path, 'test', transform, im_size)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
@@ -268,6 +267,7 @@ def train_dino(args):
     print(f"Student and Teacher are built: they are both {args.arch} network.")
 
     if args.testing:
+        test_dataset = get_dataset(args.dataset, args.data_path, 'test', transform, im_size)
         testing(test_dataset, teacher_without_ddp)
         return
 

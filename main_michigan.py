@@ -138,7 +138,10 @@ def get_args_parser():
     # Misc
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
         help='Please specify path to the ImageNet training data.')
+    parser.add_argument('--val_data_path', default=None, type=str,
+                        help='Please specify path to the ImageNet training data.')
     parser.add_argument('--dataset', default='michigan', type=str, choices=['michigan', 'geshaem'])
+    parser.add_argument('--val_dataset', default=None, type=str, choices=['michigan', 'geshaem'])
     parser.add_argument('--pretrained_path', default='/path/to/imagenet/train/', type=str,
                         help='Please specify path to the pretrained model')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
@@ -199,8 +202,9 @@ def train_dino(args):
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-
-    val_dataset = get_dataset(args.dataset, args.data_path, 'validation', transform, im_size)
+    val_dataset = args.dataset if args.val_dataset is None else args.val_dataset
+    val_data_path = args.data_path if args.val_data_path is None else args.val_data_path
+    val_dataset = get_dataset(val_dataset, val_data_path, 'validation', transform, im_size)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions

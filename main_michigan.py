@@ -29,10 +29,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from PIL import Image
-from ml_engine.criterion.losses import BatchDotProduct
+from ml_engine.criterion.losses import BatchDotProduct, NegativeLoss
 from ml_engine.data.samplers import MPerClassSampler
-from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings
-from ml_engine.evaluation.metrics import AverageMeter
+from ml_engine.evaluation.distances import compute_distance_matrix_from_embeddings, compute_distance_matrix
+from ml_engine.evaluation.metrics import AverageMeter, calc_map_prak
 from ml_engine.preprocessing.transforms import PadCenterCrop, ACompose
 from ml_engine.utils import get_combinations
 from torch.utils.data import ConcatDataset
@@ -535,12 +535,31 @@ def validate_dataloader(data_loader, model):
     embeddings = torch.cat(embeddings)
     labels = torch.cat(labels)
 
-    criterion = BatchDotProduct(reduction='none')
-    similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+    criterion = NegativeLoss(BatchDotProduct(reduction='none'))
+    if args.dataset == 'geshaem':
+        features = {}
+        for feature, target in zip(embeddings, labels.numpy()):
+            features.setdefault(target, []).append(feature)
 
-    distance_matrix = 1 - similarity_matrix
-    print(f'N samples: {len(embeddings)}, N categories: {len(torch.unique(labels))}')
-    m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
+        features = {k: torch.stack(v).cuda() for k, v in features.items()}
+        distance_df = compute_distance_matrix(features, reduction='mean', distance_fn=criterion)
+
+        index_to_fragment = {i: x for i, x in enumerate(data_loader.dataset.fragments)}
+        distance_df.rename(columns=index_to_fragment, index=index_to_fragment, inplace=True)
+        print(f'N samples: {len(distance_df)}, N categories: {len(distance_df.columns)}')
+
+        positive_pairs = data_loader.dataset.fragment_to_group
+
+        distance_mat = distance_df.to_numpy()
+        m_ap, (top1, pr_a_k10) = calc_map_prak(distance_mat, distance_df.columns, positive_pairs, prak=(1, 10))
+
+    else:
+
+        similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+
+        distance_matrix = 1 - similarity_matrix
+        print(f'N samples: {len(embeddings)}, N categories: {len(torch.unique(labels))}')
+        m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
 
     m_ap_meter.update(m_ap)
     top1_meter.update(top1)

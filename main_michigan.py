@@ -272,6 +272,7 @@ def train_dino(args):
 
     if args.testing:
         test_dataset = get_dataset(args.dataset, args.data_path, 'test', transform, im_size)
+        val_loss = validation(val_dataset, teacher_without_ddp)
         testing(test_dataset, teacher_without_ddp)
         return
 

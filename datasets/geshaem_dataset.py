@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 import re
 from enum import Enum
@@ -111,7 +112,7 @@ class GeshaemPatch(VisionDataset):
                     continue
 
                 width, height = imagesize.get(img_path)
-                ratio = max(round((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
+                ratio = max(math.ceil((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
                 for _ in range(int(ratio)):
                     if split.is_val():
                         # In evaluation, we evaluate the images across fragments

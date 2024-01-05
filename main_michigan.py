@@ -178,7 +178,7 @@ def train_dino(args):
         args.local_crops_scale,
         args.local_crops_number,
         t_im_size=args.im_size,
-        s_im_size=args.im_size // 3
+        s_im_size=int(args.im_size * 3 / 7)
     )
 
     transform = torchvision.transforms.Compose([

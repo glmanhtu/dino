@@ -117,7 +117,7 @@ class GeshaemPatch(VisionDataset):
                     labels.append(idx)
                     data.append(img_path)
 
-            if len(data) < 2:
+            if split.is_train() and len(data) < 2:
                 continue
 
             self.data.extend(data)

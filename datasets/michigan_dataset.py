@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 from enum import Enum
 from typing import Union
@@ -36,7 +37,7 @@ class _Split(Enum):
 class MichiganDataset(Dataset):
     Split = Union[_Split]
 
-    def __init__(self, dataset_path: str, split: "MichiganDataset.Split", transforms, min_size=112):
+    def __init__(self, dataset_path: str, split: "MichiganDataset.Split", transforms, im_size, min_size=112):
         self.dataset_path = dataset_path
         files = glob.glob(os.path.join(dataset_path, '**', '*.png'), recursive=True)
         files.extend(glob.glob(os.path.join(dataset_path, '**', '*.jpg'), recursive=True))
@@ -74,8 +75,11 @@ class MichiganDataset(Dataset):
                 width, height = imagesize.get(fragment)
                 if width * height < min_size * min_size:
                     continue
-                data.append((img, fragment))
-                labels.append(self.__label_idxes[img])
+
+                ratio = max(math.ceil((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
+                for _ in range(int(ratio)):
+                    data.append((img, fragment))
+                    labels.append(self.__label_idxes[img])
 
             if len(data) > 2:
                 self.data.extend(data)

@@ -328,6 +328,10 @@ def train_dino(args):
     best_loss = 9999999
     for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
+        if epoch == 0:
+            val_loss = validation(val_datasets, teacher_without_ddp)
+            best_loss = val_loss
+            print('Initial val loss: {:.4f}'.format(val_loss))
 
         # ============ training one epoch of DINO ... ============
         train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss,

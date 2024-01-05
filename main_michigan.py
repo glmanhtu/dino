@@ -555,10 +555,8 @@ def validate_dataloader(data_loader, model):
         m_ap, (top1, pr_a_k10) = calc_map_prak(distance_mat, distance_df.columns, positive_pairs, prak=(1, 10))
 
     else:
-
-        similarity_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
-
-        distance_matrix = 1 - similarity_matrix
+        distance_matrix = compute_distance_matrix_from_embeddings(embeddings, criterion)
+        distance_matrix = distance_matrix
         print(f'N samples: {len(embeddings)}, N categories: {len(torch.unique(labels))}')
         m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
 

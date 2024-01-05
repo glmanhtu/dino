@@ -182,10 +182,10 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.RandomCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
+        torchvision.transforms.RandomCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
         transform
     ])
-    dataset = get_dataset(args.dataset, args.data_path, 'train', transform, im_size)
+    dataset = get_dataset(args.dataset, args.data_path, 'train', transform, 512)
     sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.repeat_dataset,
                                repeat_same_class=args.repeat_same_class)
     data_loader = torch.utils.data.DataLoader(
@@ -198,13 +198,14 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        PadCenterCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
+        PadCenterCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
+        torchvision.transforms.Resize((im_size, im_size)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
     val_dataset = args.dataset if args.val_dataset is None else args.val_dataset
     val_data_path = args.data_path if args.val_data_path is None else args.val_data_path
-    val_dataset = get_dataset(val_dataset, val_data_path, 'validation', transform, im_size)
+    val_dataset = get_dataset(val_dataset, val_data_path, 'validation', transform, 512)
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
@@ -271,7 +272,7 @@ def train_dino(args):
     print(f"Student and Teacher are built: they are both {args.arch} network.")
 
     if args.testing:
-        test_dataset = get_dataset(args.dataset, args.data_path, 'test', transform, im_size)
+        test_dataset = get_dataset(args.dataset, args.data_path, 'test', transform, 512)
         val_loss = validation(val_dataset, teacher_without_ddp)
         testing(test_dataset, teacher_without_ddp)
         return

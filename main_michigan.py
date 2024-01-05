@@ -429,28 +429,28 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
         groups = torch.cat(groups, dim=0)
         # move images to gpu
         images = [im.cuda(non_blocking=True) for im in images]
+
+        # student update
+        optimizer.zero_grad()
+
         # teacher and student forward passes + compute dino loss
         with torch.cuda.amp.autocast(fp16_scaler is not None):
             teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
-            student_output = student(images)
-            loss = dino_loss(student_output, teacher_output, epoch, groups)
+            # student_output = student(images)
+            loss = dino_loss(student, images, teacher_output, epoch, groups, fp16_scaler)
 
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
             sys.exit(1)
 
-        # student update
-        optimizer.zero_grad()
         param_norms = None
         if fp16_scaler is None:
-            loss.backward()
             if args.clip_grad:
                 param_norms = utils.clip_gradients(student, args.clip_grad)
             utils.cancel_gradients_last_layer(epoch, student,
                                               args.freeze_last_layer)
             optimizer.step()
         else:
-            fp16_scaler.scale(loss).backward()
             if args.clip_grad:
                 fp16_scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
                 param_norms = utils.clip_gradients(student, args.clip_grad)
@@ -586,12 +586,10 @@ class DINOLoss(nn.Module):
             np.ones(nepochs - warmup_teacher_temp_epochs) * teacher_temp
         ))
 
-    def forward(self, student_output, teacher_output, epoch, groups):
+    def forward(self, student_model, student_feats, teacher_output, epoch, groups, fp16_scaler):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
-        student_out = student_output / self.student_temp
-        student_out = student_out.chunk(self.ncrops)
 
         # teacher centering and sharpening
         temp = self.teacher_temp_schedule[epoch]
@@ -599,17 +597,22 @@ class DINOLoss(nn.Module):
         teacher_out = teacher_out.detach().chunk(2)
 
         total_loss = 0
-        n_loss_terms = 0
+        n_loss_terms = (len(teacher_out) * len(student_feats)) - len(teacher_out)
         for iq, q in enumerate(teacher_out):
-            for v in range(len(student_out)):
+            for v, chunk in enumerate(student_feats):
                 if v == iq:
                     # we skip cases where student and teacher operate on the same view
                     continue
+                student_out = student_model(chunk)  # forward computation graph
+                student_out = student_out / self.student_temp
                 # loss = torch.sum(-q * F.log_softmax(student_out[v], dim=-1), dim=-1)
-                loss = torch.sum(-q[groups[:, 0]] * F.log_softmax(student_out[v][groups[:, 1]], dim=-1), dim=-1)
-                total_loss += loss.mean()
-                n_loss_terms += 1
-        total_loss /= n_loss_terms
+                loss = torch.sum(-q[groups[:, 0]] * F.log_softmax(student_out[groups[:, 1]], dim=-1), dim=-1)
+                loss = loss.mean() / n_loss_terms
+                if fp16_scaler is None:
+                    loss.backward()
+                else:
+                    fp16_scaler.scale(loss).backward()
+                total_loss += loss.detach()
         self.update_center(teacher_output)
         return total_loss
 

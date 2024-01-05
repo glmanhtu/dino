@@ -159,7 +159,7 @@ def get_args_parser():
 
 def get_dataset(name, data_path, data_part, transform, im_size):
     if name == 'michigan':
-        return MichiganDataset(data_path, MichiganDataset.Split.from_string(data_part), transform)
+        return MichiganDataset(data_path, MichiganDataset.Split.from_string(data_part), transform, im_size=im_size)
     elif name == 'geshaem':
         return GeshaemPatch(data_path, GeshaemPatch.Split.from_string(data_part), transform=transform, im_size=im_size)
     else:

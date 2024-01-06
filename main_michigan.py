@@ -415,8 +415,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             targets.shape[0], n
         ).t() == targets.expand(n, targets.shape[0])
 
-        eyes_ = torch.eye(n, dtype=torch.bool).cuda()
-        pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+        # eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+        # pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
 
         groups = []
         for j in range(n):
@@ -537,7 +537,7 @@ def validate_dataloader(data_loader, model):
     labels = torch.cat(labels)
 
     criterion = NegativeLoss(BatchDotProduct(reduction='none'))
-    if args.dataset == 'geshaem':
+    if isinstance(data_loader.dataset, GeshaemPatch):
         features = {}
         for feature, target in zip(embeddings, labels.numpy()):
             features.setdefault(target, []).append(feature)

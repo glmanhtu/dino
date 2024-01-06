@@ -112,11 +112,12 @@ class GeshaemPatch(VisionDataset):
                     continue
 
                 width, height = imagesize.get(img_path)
-                ratio = max(math.ceil((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
+                ratio = max(round((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
                 for _ in range(int(ratio)):
                     labels.append(idx)
                     data.append(img_path)
 
+            # For
             if split.is_train() and len(data) < 2:
                 continue
 

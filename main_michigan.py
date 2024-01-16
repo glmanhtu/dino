@@ -68,9 +68,9 @@ def get_args_parser():
         values leads to better performance but requires more memory. Applies only
         for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
         mixed precision training (--use_fp16 false) to avoid unstabilities.""")
-    parser.add_argument('--out_dim', default=65536, type=int, help="""Dimensionality of
+    parser.add_argument('--out_dim', default=8192, type=int, help="""Dimensionality of
         the DINO head output. For complex and large datasets large values (like 65k) work well.""")
-    parser.add_argument('--norm_last_layer', default=False, type=utils.bool_flag,
+    parser.add_argument('--norm_last_layer', default=True, type=utils.bool_flag,
         help="""Whether or not to weight normalize the last layer of the DINO head.
         Not normalizing leads to better performance but can make the training unstable.
         In our experiments, we typically set this paramater to False with vit_small and True with vit_base.""")
@@ -81,10 +81,10 @@ def get_args_parser():
         help="Whether to use batch normalizations in projection head (Default: False)")
 
     # Temperature teacher parameters
-    parser.add_argument('--warmup_teacher_temp', default=0.04, type=float,
+    parser.add_argument('--warmup_teacher_temp', default=0.02, type=float,
         help="""Initial value for the teacher temperature: 0.04 works well in most cases.
         Try decreasing it if the training loss does not decrease.""")
-    parser.add_argument('--teacher_temp', default=0.04, type=float, help="""Final value (after linear warmup)
+    parser.add_argument('--teacher_temp', default=0.02, type=float, help="""Final value (after linear warmup)
         of the teacher temperature. For most experiments, anything above 0.07 is unstable. We recommend
         starting with the default value of 0.04 and increase this slightly if needed.""")
     parser.add_argument('--warmup_teacher_temp_epochs', default=0, type=int,
@@ -109,12 +109,12 @@ def get_args_parser():
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
         during which we keep the output layer fixed. Typically doing so during
         the first epoch helps training. Try increasing this value if the loss does not decrease.""")
-    parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
+    parser.add_argument("--lr", default=0.005, type=float, help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
         with the batch size, and specified here for a reference batch size of 256.""")
     parser.add_argument("--warmup_epochs", default=5, type=int,
         help="Number of epochs for the linear learning-rate warm up.")
-    parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
+    parser.add_argument('--min_lr', type=float, default=5e-5, help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""")
     parser.add_argument('--optimizer', default='adamw', type=str,
         choices=['adamw', 'sgd', 'lars'], help="""Type of optimizer. We recommend using adamw with ViTs.""")
@@ -203,9 +203,33 @@ def train_dino(args):
     ])
     val_dataset = get_dataset('geshaem', args.path_geshaem, args.path_michigan, 'validation', transform)
 
-    student = timm.create_model(args.arch, pretrained=True, num_classes=0)
-    teacher = timm.create_model(args.arch, pretrained=True, num_classes=0)
-    embed_dim = student.embed_dim
+    # ============ building student and teacher networks ... ============
+    # we changed the name DeiT-S for ViT-S to avoid confusions
+    args.arch = args.arch.replace("deit", "vit")
+    # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
+    if args.arch in vits.__dict__.keys():
+        student = vits.__dict__[args.arch](
+            img_size=[im_size],
+            patch_size=args.patch_size,
+            drop_path_rate=args.drop_path_rate,  # stochastic depth
+        )
+        teacher = vits.__dict__[args.arch](
+            img_size=[im_size],
+            patch_size=args.patch_size)
+        embed_dim = student.embed_dim
+    # if the network is a XCiT
+    elif args.arch in torch.hub.list("facebookresearch/xcit:main"):
+        student = torch.hub.load('facebookresearch/xcit:main', args.arch,
+                                 pretrained=False, drop_path_rate=args.drop_path_rate)
+        teacher = torch.hub.load('facebookresearch/xcit:main', args.arch, pretrained=False)
+        embed_dim = student.embed_dim
+    # otherwise, we check if the architecture is in torchvision models
+    elif args.arch in torchvision_models.__dict__.keys():
+        student = torchvision_models.__dict__[args.arch]()
+        teacher = torchvision_models.__dict__[args.arch]()
+        embed_dim = student.fc.weight.shape[1]
+    else:
+        print(f"Unknow architecture: {args.arch}")
 
     # multi-crop wrapper handles forward with inputs of different resolutions
     student = utils.MultiCropWrapper(student, DINOHead(
@@ -606,7 +630,7 @@ class DataAugmentationDINO(object):
             torchvision.transforms.RandomApply([
                 torchvision.transforms.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.3, hue=0.1),
             ], p=.5),
-            utils.GaussianBlur(p=0.5, radius_max=1),
+            # utils.GaussianBlur(p=0.5, radius_max=1),
             # transforms.Solarization(p=0.2),
             torchvision.transforms.RandomGrayscale(p=0.2),
         ])
@@ -617,16 +641,16 @@ class DataAugmentationDINO(object):
 
         # first global crop
         self.global_transfo1 = transforms.Compose([
-            # transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            # utils.GaussianBlur(1.0),
+            utils.GaussianBlur(1.0, radius_max=1),
             normalize,
         ])
         # second global crop
         self.global_transfo2 = transforms.Compose([
-            # transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            # utils.GaussianBlur(0.1),
+            utils.GaussianBlur(0.1, radius_max=1),
             # utils.Solarization(0.2),
             normalize,
         ])
@@ -635,6 +659,7 @@ class DataAugmentationDINO(object):
         self.local_transfo = transforms.Compose([
             transforms.RandomResizedCrop(s_im_size, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
+            utils.GaussianBlur(0.5, radius_max=1),
             # utils.GaussianBlur(p=0.5),
             normalize,
         ])

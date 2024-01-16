@@ -1,10 +1,8 @@
 import glob
-import math
 import os
 from enum import Enum
 from typing import Union
 
-import imagesize
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -12,6 +10,7 @@ from torch.utils.data import Dataset
 class _Split(Enum):
     TRAIN = "train"
     VAL = "validation"
+    ALL = "all"
 
     @property
     def length(self) -> float:
@@ -37,7 +36,7 @@ class _Split(Enum):
 class MichiganDataset(Dataset):
     Split = Union[_Split]
 
-    def __init__(self, dataset_path: str, split: "MichiganDataset.Split", transforms, im_size, min_size=112):
+    def __init__(self, dataset_path: str, split: "MichiganDataset.Split", transforms):
         self.dataset_path = dataset_path
         files = glob.glob(os.path.join(dataset_path, '**', '*.png'), recursive=True)
         files.extend(glob.glob(os.path.join(dataset_path, '**', '*.jpg'), recursive=True))
@@ -45,7 +44,7 @@ class MichiganDataset(Dataset):
         image_map = {}
         for file in files:
             file_name_components = file.split(os.sep)
-            im_name, rv, sum_det, _, im_type, _ = file_name_components[-6:]
+            im_name, rv, sum_det, _, im_type, _, _ = file_name_components[-7:]
             if rv != 'front':
                 continue
             if im_type != 'papyrus':
@@ -54,36 +53,35 @@ class MichiganDataset(Dataset):
 
         images = {}
         for img in image_map:
+            images[img] = []
             key = 'detail'
             if key not in image_map[img]:
                 key = 'summary'
             images[img] = image_map[img][key]
 
         self.labels = sorted(images.keys())
-        self.__label_idxes = {k: i for i, k in enumerate(self.labels)}
 
         if split == MichiganDataset.Split.TRAIN:
             self.labels = self.labels[: int(len(self.labels) * split.length)]
-        else:
+        elif split == MichiganDataset.Split.VAL:
             self.labels = self.labels[-int(len(self.labels) * split.length):]
+        else:
+            self.labels = self.labels
 
+        self.__label_idxes = {k: i for i, k in enumerate(self.labels)}
         self.data = []
         self.data_labels = []
         for img in self.labels:
             data, labels = [], []
             for fragment in sorted(images[img]):
-                width, height = imagesize.get(fragment)
-                if width * height < min_size * min_size:
-                    continue
+                data.append(fragment)
+                labels.append(self.__label_idxes[img])
 
-                ratio = max(round((width * height) / (im_size * im_size)), 1) if split.is_train() else 1
-                for _ in range(int(ratio)):
-                    data.append((img, fragment))
-                    labels.append(self.__label_idxes[img])
+            if split.is_val() and len(data) < 2:
+                continue
 
-            if len(data) > 2:
-                self.data.extend(data)
-                self.data_labels.extend(labels)
+            self.data.extend(data)
+            self.data_labels.extend(labels)
 
         self.transforms = transforms
 
@@ -91,7 +89,7 @@ class MichiganDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        (img_name, fragment) = self.data[idx]
+        fragment = self.data[idx]
 
         with Image.open(fragment) as img:
             image = self.transforms(img.convert('RGB'))

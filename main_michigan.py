@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import timm
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
@@ -43,7 +44,7 @@ import albumentations as A
 import utils
 import vision_transformer as vits
 import wi19_evaluate
-from datasets.geshaem_dataset import GeshaemPatch
+from datasets.geshaem_dataset import GeshaemPatch, MergeDataset
 from datasets.michigan_dataset import MichiganDataset
 from vision_transformer import DINOHead
 
@@ -55,16 +56,12 @@ def get_args_parser():
     parser = argparse.ArgumentParser('DINO', add_help=False)
 
     # Model parameters
-    parser.add_argument('--arch', default='vit_small', type=str,
-        choices=['vit_tiny', 'vit_small', 'vit_base', 'xcit', 'deit_tiny', 'deit_small'] \
-                + torchvision_archs,
-        help="""Name of architecture to train. For quick experiments with ViTs,
-        we recommend using vit_tiny or vit_small.""")
+    parser.add_argument('--arch', default='vit_small_patch16_384.augreg_in21k_ft_in1k', type=str)
     parser.add_argument('--multiscale', default=False, type=utils.bool_flag)
     parser.add_argument('--repeat_same_class', default=False, type=utils.bool_flag)
     parser.add_argument('--testing', default=False, type=utils.bool_flag)
-    parser.add_argument('--m_per_class', default=5, type=int)
-    parser.add_argument('--im_size', default=512, type=int)
+    parser.add_argument('--m_per_class', default=3, type=int)
+    parser.add_argument('--im_size', default=384, type=int)
 
     parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
         of input square patches - default 16 (for 16x16 patches). Using smaller
@@ -136,12 +133,9 @@ def get_args_parser():
         Used for small local view cropping of multi-crop.""")
 
     # Misc
-    parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
-        help='Please specify path to the ImageNet training data.')
-    parser.add_argument('--val_data_path', default=None, type=str,
-                        help='Please specify path to the ImageNet training data.')
-    parser.add_argument('--dataset', default='michigan', type=str, choices=['michigan', 'geshaem'])
-    parser.add_argument('--val_dataset', default=None, type=str, choices=['michigan', 'geshaem'])
+    parser.add_argument('--path_geshaem', default='/path/to/geshaem/', type=str)
+    parser.add_argument('--path_michigan', default='/path/to/michigan/', type=str)
+    parser.add_argument('--dataset', default='michigan', type=str, choices=['michigan', 'geshaem', 'merge'])
     parser.add_argument('--pretrained_path', default='/path/to/imagenet/train/', type=str,
                         help='Please specify path to the pretrained model')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
@@ -155,11 +149,16 @@ def get_args_parser():
     return parser
 
 
-def get_dataset(name, data_path, data_part, transform, im_size):
+def get_dataset(name, geshaem_path, michigan_path, data_part, transform):
     if name == 'michigan':
-        return MichiganDataset(data_path, MichiganDataset.Split.from_string(data_part), transform, im_size=im_size)
+        return MichiganDataset(michigan_path, MichiganDataset.Split.from_string(data_part), transform)
     elif name == 'geshaem':
-        return GeshaemPatch(data_path, GeshaemPatch.Split.from_string(data_part), transform=transform, im_size=im_size)
+        return GeshaemPatch(geshaem_path, GeshaemPatch.Split.from_string(data_part), transform=transform)
+    elif name == 'merge':
+        michigan = MichiganDataset(michigan_path, MichiganDataset.Split.ALL, transform)
+        geshaem = GeshaemPatch(geshaem_path, GeshaemPatch.Split.from_string(data_part),
+                               transform=transform, include_verso=False, base_idx=len(michigan.labels))
+        return MergeDataset([michigan, geshaem], transform)
     else:
         raise NotImplementedError('Dataset {} not implemented'.format(name))
 
@@ -182,10 +181,10 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        torchvision.transforms.RandomCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
+        torchvision.transforms.RandomCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
         transform
     ])
-    dataset = get_dataset(args.dataset, args.data_path, 'train', transform, 512)
+    dataset = get_dataset(args.dataset, args.path_geshaem, args.path_michigan, 'train', transform)
     sampler = MPerClassSampler(dataset.data_labels, m=args.m_per_class, length_before_new_iter=len(dataset) * args.repeat_dataset,
                                repeat_same_class=args.repeat_same_class)
     data_loader = torch.utils.data.DataLoader(
@@ -198,42 +197,15 @@ def train_dino(args):
     )
 
     transform = torchvision.transforms.Compose([
-        PadCenterCrop((512, 512), pad_if_needed=True, fill=(255, 255, 255)),
-        torchvision.transforms.Resize((im_size, im_size)),
+        PadCenterCrop((im_size, im_size), pad_if_needed=True, fill=(255, 255, 255)),
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    val_dataset = args.dataset if args.val_dataset is None else args.val_dataset
-    val_data_path = args.data_path if args.val_data_path is None else args.val_data_path
-    val_dataset = get_dataset(val_dataset, val_data_path, 'validation', transform, 512)
+    val_dataset = get_dataset('geshaem', args.path_geshaem, args.path_michigan, 'validation', transform)
 
-    # ============ building student and teacher networks ... ============
-    # we changed the name DeiT-S for ViT-S to avoid confusions
-    args.arch = args.arch.replace("deit", "vit")
-    # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
-    if args.arch in vits.__dict__.keys():
-        student = vits.__dict__[args.arch](
-            img_size=[im_size],
-            patch_size=args.patch_size,
-            drop_path_rate=args.drop_path_rate,  # stochastic depth
-        )
-        teacher = vits.__dict__[args.arch](
-            img_size=[im_size],
-            patch_size=args.patch_size)
-        embed_dim = student.embed_dim
-    # if the network is a XCiT
-    elif args.arch in torch.hub.list("facebookresearch/xcit:main"):
-        student = torch.hub.load('facebookresearch/xcit:main', args.arch,
-                                 pretrained=False, drop_path_rate=args.drop_path_rate)
-        teacher = torch.hub.load('facebookresearch/xcit:main', args.arch, pretrained=False)
-        embed_dim = student.embed_dim
-    # otherwise, we check if the architecture is in torchvision models
-    elif args.arch in torchvision_models.__dict__.keys():
-        student = torchvision_models.__dict__[args.arch]()
-        teacher = torchvision_models.__dict__[args.arch]()
-        embed_dim = student.fc.weight.shape[1]
-    else:
-        print(f"Unknow architecture: {args.arch}")
+    student = timm.create_model(args.arch, pretrained=True, num_classes=0)
+    teacher = timm.create_model(args.arch, pretrained=True, num_classes=0)
+    embed_dim = student.embed_dim
 
     # multi-crop wrapper handles forward with inputs of different resolutions
     student = utils.MultiCropWrapper(student, DINOHead(
@@ -272,7 +244,7 @@ def train_dino(args):
     print(f"Student and Teacher are built: they are both {args.arch} network.")
 
     if args.testing:
-        test_dataset = get_dataset(args.dataset, args.data_path, 'test', transform, 512)
+        test_dataset = get_dataset(args.dataset, args.path_geshaem, args.path_michigan, 'test', transform)
         val_loss = validation(val_dataset, teacher_without_ddp)
         testing(test_dataset, teacher_without_ddp)
         return
@@ -415,8 +387,8 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
             targets.shape[0], n
         ).t() == targets.expand(n, targets.shape[0])
 
-        # eyes_ = torch.eye(n, dtype=torch.bool).cuda()
-        # pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
+        eyes_ = torch.eye(n, dtype=torch.bool).cuda()
+        pos_mask[:, :n] = pos_mask[:, :n] * ~eyes_
 
         groups = []
         for j in range(n):
@@ -513,8 +485,7 @@ def testing(dataset, model):
 @torch.no_grad()
 def validate_dataloader(data_loader, model):
     model.eval()
-    batch_time, m_ap_meter = AverageMeter(), AverageMeter()
-    top1_meter, pk10_meter = AverageMeter(), AverageMeter()
+    batch_time = AverageMeter()
 
     end = time.time()
     print('Starting to evaluate...')
@@ -560,13 +531,7 @@ def validate_dataloader(data_loader, model):
         print(f'N samples: {len(embeddings)}, N categories: {len(torch.unique(labels))}')
         m_ap, top1, pr_a_k10, pr_a_k100 = wi19_evaluate.get_metrics(distance_matrix.numpy(), labels.numpy())
 
-    m_ap_meter.update(m_ap)
-    top1_meter.update(top1)
-    pk10_meter.update(pr_a_k10)
-
-    AverageMeter.reduces(m_ap_meter, top1_meter, pk10_meter)
-
-    return m_ap_meter.avg, top1_meter.avg, pk10_meter.avg
+    return m_ap, top1, pr_a_k10
 
 
 class DINOLoss(nn.Module):
@@ -632,16 +597,18 @@ class DINOLoss(nn.Module):
 class DataAugmentationDINO(object):
     def __init__(self, global_crops_scale, local_crops_scale, local_crops_number, t_im_size=224, s_im_size=96):
         flip_and_color_jitter = transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomVerticalFlip(),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                p=0.8
-            ),
-            transforms.RandomGrayscale(p=0.2),
             ACompose([
-                A.CLAHE()
-            ])
+                A.CoarseDropout(max_holes=32, min_holes=3, min_height=16, max_height=64, min_width=16, max_width=64,
+                                fill_value=255, p=0.9),
+            ]),
+            torchvision.transforms.RandomHorizontalFlip(p=0.5),
+            torchvision.transforms.RandomVerticalFlip(p=0.5),
+            torchvision.transforms.RandomApply([
+                torchvision.transforms.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.3, hue=0.1),
+            ], p=.5),
+            utils.GaussianBlur(p=0.5, radius_max=1),
+            # transforms.Solarization(p=0.2),
+            torchvision.transforms.RandomGrayscale(p=0.2),
         ])
         normalize = transforms.Compose([
             transforms.ToTensor(),
@@ -650,17 +617,17 @@ class DataAugmentationDINO(object):
 
         # first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            # transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(1.0),
+            # utils.GaussianBlur(1.0),
             normalize,
         ])
         # second global crop
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            # transforms.RandomResizedCrop(t_im_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(0.1),
-            utils.Solarization(0.2),
+            # utils.GaussianBlur(0.1),
+            # utils.Solarization(0.2),
             normalize,
         ])
         # transformation for the local small crops
@@ -668,7 +635,7 @@ class DataAugmentationDINO(object):
         self.local_transfo = transforms.Compose([
             transforms.RandomResizedCrop(s_im_size, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            utils.GaussianBlur(p=0.5),
+            # utils.GaussianBlur(p=0.5),
             normalize,
         ])
 

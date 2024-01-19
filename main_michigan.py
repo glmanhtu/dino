@@ -157,7 +157,7 @@ def get_dataset(name, geshaem_path, michigan_path, data_part, transform):
     elif name == 'merge':
         michigan = MichiganDataset(michigan_path, MichiganDataset.Split.ALL, transform)
         geshaem = GeshaemPatch(geshaem_path, GeshaemPatch.Split.from_string(data_part),
-                               transform=transform, include_verso=False, base_idx=len(michigan.labels))
+                               transform=transform, include_verso=False, base_idx=len(michigan.groups))
         return MergeDataset([michigan, geshaem], transform)
     else:
         raise NotImplementedError('Dataset {} not implemented'.format(name))

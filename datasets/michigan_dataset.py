@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Union
 
 from PIL import Image
+from ml_engine.data.grouping import add_items_to_group
 from torch.utils.data import Dataset
 
 
@@ -42,14 +43,26 @@ class MichiganDataset(Dataset):
         files.extend(glob.glob(os.path.join(dataset_path, '**', '*.jpg'), recursive=True))
 
         image_map = {}
+        groups = []
         for file in files:
             file_name_components = file.split(os.sep)
-            im_name, rv, sum_det, _, im_type, _, _ = file_name_components[-7:]
+            im_name, rv, sum_det, sub_name, im_type, _, _ = file_name_components[-7:]
+            add_items_to_group([im_name, sub_name], groups)
             if rv != 'front':
                 continue
             if im_type != 'papyrus':
                 continue
             image_map.setdefault(im_name, {}).setdefault(sum_det, []).append(file)
+
+        self.fragment_to_group = {}
+        self.fragment_to_group_id = {}
+        self.groups = groups
+
+        for idx, group in enumerate(groups):
+            for fragment in group:
+                self.fragment_to_group_id[fragment] = idx
+                for fragment2 in group:
+                    self.fragment_to_group.setdefault(fragment, set([])).add(fragment2)
 
         images = {}
         for img in image_map:
@@ -59,23 +72,21 @@ class MichiganDataset(Dataset):
                 key = 'summary'
             images[img] = image_map[img][key]
 
-        self.labels = sorted(images.keys())
+        self.image_names = sorted(images.keys())
 
         if split == MichiganDataset.Split.TRAIN:
-            self.labels = self.labels[: int(len(self.labels) * split.length)]
-        elif split == MichiganDataset.Split.VAL:
-            self.labels = self.labels[-int(len(self.labels) * split.length):]
+            self.image_names = self.image_names[: int(len(self.image_names) * split.length)]
         else:
-            self.labels = self.labels
+            self.image_names = self.image_names[-int(len(self.image_names) * split.length):]
 
-        self.__label_idxes = {k: i for i, k in enumerate(self.labels)}
+        self.image_idxes = {k: i for i, k in enumerate(self.image_names)}
         self.data = []
         self.data_labels = []
-        for img in self.labels:
+        for img in self.image_names:
             data, labels = [], []
             for fragment in sorted(images[img]):
                 data.append(fragment)
-                labels.append(self.__label_idxes[img])
+                labels.append(self.fragment_to_group_id[img])
 
             if split.is_val() and len(data) < 2:
                 continue

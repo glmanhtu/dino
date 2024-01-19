@@ -76,8 +76,10 @@ class MichiganDataset(Dataset):
 
         if split == MichiganDataset.Split.TRAIN:
             self.image_names = self.image_names[: int(len(self.image_names) * split.length)]
-        else:
+        elif split == MichiganDataset.Split.VAL:
             self.image_names = self.image_names[-int(len(self.image_names) * split.length):]
+        else:
+            self.image_names = self.image_names
 
         self.image_idxes = {k: i for i, k in enumerate(self.image_names)}
         self.data = []
